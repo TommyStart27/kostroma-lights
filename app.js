@@ -645,55 +645,88 @@ function selectLight(i, center) {
 // ---- замер у светофора: кнопки «загорелся», цикл усредняется по нескольким кругам
 const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
 const r1 = v => Math.round(v * 10) / 10;
-function mark(btn, tEv) {
+function getMeas() {
+  let m = (S.meas && S.meas.id === S.selected) ? S.meas : null;
+  if (!m || !m.cyc) m = S.meas = { id: S.selected, cyc: [], gr: [], ye: [], re: [], man: {} };
+  m.man = m.man || {};
+  return m;
+}
+// btn: gs/ge/rs/re; tEv — время касания; future — событие из табло (может быть в будущем)
+function mark(btn, tEv, future) {
   if (S.selected == null) return;
   // 4 кнопки → 3 события: начало зелёного = конец красного, начало красного = конец зелёного
   const k = { gs: 'g', re: 'g', ge: 'y', rs: 'r' }[btn] || btn;
-  // время самого касания (а не обработки), если браузер его даёт
-  const now = (tEv && Math.abs(tEv - Date.now()) < 1500) ? tEv : Date.now();
-  let m = (S.meas && S.meas.id === S.selected) ? S.meas : null;
-  if (!m || !m.cyc) m = S.meas = { id: S.selected, cyc: [], gr: [], ye: [], re: [] };
-  const fresh = (t, lim) => t != null && now - t < lim;
+  const now = future ? tEv : ((tEv && Math.abs(tEv - Date.now()) < 1500) ? tEv : Date.now());
+  const m = getMeas();
+  const fresh = (t, lim) => t != null && Math.abs(now - t) < lim;
   const ago = t => (now - t) / 1000;
-  if (k === m.lk && fresh(m.t, 2500)) { m.last = btn; updMeas(); return; }   // повтор того же момента (например «Конец красного» + «Начало зелёного»)
+  if (k === m.lk && fresh(m.t, 2500)) { m.last = btn; updMeas(); return; }   // тот же момент дважды («Конец красного» + «Начало зелёного»)
   if (k === 'g') {
     if (fresh(m.g, 300000) && ago(m.g) > 8) m.cyc.push(ago(m.g));
-    if (fresh(m.r, 300000)) m.re.push(ago(m.r));
+    if (fresh(m.r, 300000) && ago(m.r) > 0) m.re.push(ago(m.r));
     m.g = now; m.y = null; m.r = null;
   } else if (k === 'y') {
-    if (fresh(m.g, 300000)) m.gr.push(ago(m.g));
+    if (fresh(m.g, 300000) && ago(m.g) > 0) m.gr.push(ago(m.g));
     m.y = now;
   } else if (k === 'r') {
-    if (fresh(m.y, 15000)) m.ye.push(ago(m.y));
-    else if (fresh(m.g, 300000)) m.gr.push(ago(m.g) - (m.ye.length ? avg(m.ye) : 0));
+    if (fresh(m.y, 15000) && ago(m.y) > 0) m.ye.push(ago(m.y));
+    else if (fresh(m.g, 300000) && ago(m.g) > 0) m.gr.push(ago(m.g) - (m.ye.length ? avg(m.ye) : 0));
     m.r = now; m.y = null;
   }
   m.last = btn; m.lk = k; m.t = now;
-  try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
-  // считаем фазы
-  const y = m.ye.length ? avg(m.ye) : 0;
-  const g = m.gr.length ? avg(m.gr) : null;
+  if (!future) { try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {} }
+  recompute(m);
+}
+// собираем фазы из замеров и того, что вписано вручную (вручную вписанное не перезаписывается)
+function recompute(m) {
+  const man = m.man || {};
+  const num = id => parseFloat($(id).value);
+  const y = man.y ? (num('fY') || 0) : (m.ye.length ? avg(m.ye) : 0);
+  const g = man.g ? num('fG') : (m.gr.length ? avg(m.gr) : null);
   let r = null;
-  if (m.cyc.length && g != null) r = avg(m.cyc) - g - y;
+  if (man.r) r = num('fR');
+  else if (m.cyc.length && g > 0) r = avg(m.cyc) - g - y;
   else if (m.re.length) r = avg(m.re);
-  if (g != null) $('fG').value = r1(g);
-  $('fY').value = r1(y);
-  if (r != null && r > 0) $('fR').value = r1(r);
+  if (!man.g && g != null) $('fG').value = r1(g);
+  if (!man.y && (m.ye.length || m.gr.length)) $('fY').value = r1(y);
+  if (!man.r && r != null && r > 0) $('fR').value = r1(r);
   if (m.g) $('fA').value = fmtT(m.g);
   if (g > 0 && r > 0 && m.g) saveLight(true);
   updMeas();
+}
+// табло обратного отсчёта: «осталось N с» на зелёном/красном = будущее нажатие кнопки
+function countdown(color) {
+  if (S.selected == null) return;
+  const n = parseFloat($('fCd').value);
+  if (!(n >= 0 && n < 300)) { toast('Впишите число секунд с табло светофора'); return; }
+  const t = Date.now() + n * 1000;
+  mark(color === 'g' ? 'rs' : 'gs', t, true);
+  $('fCd').value = '';
+  toast(color === 'g' ? `Учтено: красный загорится в ${fmtT(t)}` : `Учтено: зелёный загорится в ${fmtT(t)}`);
 }
 function updMeas() {
   const el = $('eMeas'); if (!el) return;
   const m = S.meas, mine = m && m.id === S.selected && m.last;
   document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(mine && m.last === b.dataset.mk)));
-  if (!mine) { el.innerHTML = 'Жмите кнопку в момент смены сигнала. Минимум: начало зелёного → начало красного → начало зелёного. «Конец зелёного» — по желанию, если хотите учесть жёлтый. Чем больше кругов, тем точнее цикл.'; return; }
-  const s = ((Date.now() - m.t) / 1000).toFixed(1);
-  const what = { g: 'горит зелёный', y: 'горит жёлтый', r: 'горит красный' }[m.lk];
-  const next = { g: 'Конец зелёного» или «Начало красного', y: 'Начало красного', r: 'Начало зелёного' }[m.lk];
+  if (!mine) { el.innerHTML = 'Жмите кнопку в момент смены сигнала. Подъехали на красный — нажмите «Конец красного», когда загорится зелёный, затем «Начало красного», затем снова «Начало зелёного». Есть табло с секундами — впишите число и нажмите цвет. Длительность можно вписать и вручную в поля ниже.'; return; }
+  const now = Date.now();
+  let head;
+  if (now < m.t) {
+    const left = ((m.t - now) / 1000).toFixed(1);
+    head = m.lk === 'g' ? `⏳ горит красный, зелёный через <b>${left} с</b>` : `⏳ горит зелёный, красный через <b>${left} с</b>`;
+  } else {
+    const s = ((now - m.t) / 1000).toFixed(1);
+    const what = { g: 'горит зелёный', y: 'горит жёлтый', r: 'горит красный' }[m.lk];
+    const next = { g: '«Конец зелёного» или «Начало красного»', y: '«Начало красного»', r: '«Начало зелёного»' }[m.lk];
+    head = `⏱ ${what}: <b>${s} с</b> · дальше ${next}`;
+  }
+  const need = [];
+  if (!(parseFloat($('fG').value) > 0)) need.push('зелёный');
+  if (!(parseFloat($('fR').value) > 0)) need.push('красный');
+  if (!m.g) need.push('момент начала зелёного');
   let acc = '';
-  if (m.cyc.length) { const c = avg(m.cyc); acc = ` · цикл <b>${c.toFixed(1)} с</b> по ${m.cyc.length} ${m.cyc.length === 1 ? 'кругу' : 'кругам'}, точность ≈ ±${(0.4 / m.cyc.length).toFixed(2)} с`; }
-  el.innerHTML = `⏱ ${what}: <b>${s} с</b> · дальше «${next}»${acc}`;
+  if (m.cyc.length) { const c = avg(m.cyc); acc = ` · цикл <b>${c.toFixed(1)} с</b> по ${m.cyc.length} ${m.cyc.length === 1 ? 'кругу' : 'кругам'}, ±${(0.4 / m.cyc.length).toFixed(2)} с`; }
+  el.innerHTML = head + acc + (need.length ? `<br><span style="color:var(--muted)">Ещё нужно: ${need.join(', ')}</span>` : '<br><span style="color:var(--g)">✓ Тайминг полный и сохранён</span>');
 }
 function tickEditor() {
   if (S.selected == null) return;
@@ -756,6 +789,12 @@ function bind() {
     b.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); mark(b.dataset.mk); } });
   });
   $('bReset').onclick = () => { S.meas = null; updMeas(); toast('Начат новый замер'); };
+  document.querySelectorAll('[data-cd]').forEach(b => b.onclick = () => countdown(b.dataset.cd));
+  for (const [id, key] of [['fG', 'g'], ['fY', 'y'], ['fR', 'r']]) $(id).addEventListener('change', () => {
+    if (S.selected == null) return;
+    const m = getMeas(); m.man[key] = $(id).value.trim() !== '';
+    if (m.g) recompute(m); else updMeas();
+  });
   $('bSave').onclick = () => saveLight(false); $('bClear').onclick = clearLight;
   $('bExport').onclick = exportTimings;
   $('bImport').onclick = () => $('fileIn').click();

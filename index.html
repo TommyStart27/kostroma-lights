@@ -85,6 +85,9 @@
   .mkb.y small{color:var(--muted);font-weight:400}
   .mkb.g,.mkb.r{padding:9px 10px;font-size:13.5px}
   .mkb span{display:flex;flex-direction:column;gap:2px}
+  .cd{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12.5px;color:var(--muted)}
+  .cd input{width:62px;margin:0;padding:6px 7px;font-size:14px}
+  .cd button{padding:6px 9px;font-size:12.5px;white-space:nowrap}
   .mkb span small{font-weight:400;font-size:11px;color:var(--muted)}
   .mkb:active{transform:scale(.96)}
   .mkb.last{box-shadow:0 0 0 2px var(--accent)}
@@ -163,6 +166,7 @@
           <button class="mkb r" data-mk="rs"><i></i><span>Начало красного<small>= конец зелёного</small></span></button>
           <button class="mkb r" data-mk="re"><i></i><span>Конец красного<small>= начало зелёного</small></span></button>
         </div>
+        <div class="cd"><span>Табло:</span><input id="fCd" type="number" min="0" max="299" inputmode="numeric" placeholder="сек"><button class="cdb g" data-cd="g">🟢 осталось</button><button class="cdb r" data-cd="r">🔴 осталось</button></div>
         <div class="live" id="eMeas"></div>
         <div class="vals">
           <label>Зел., с<input id="fG" type="number" min="0" step="0.1" inputmode="decimal"></label>
@@ -191,7 +195,7 @@
   </aside>
 </div>
 <div id="msg"></div>
-<script src="data.js?v=6"></script>
-<script src="app.js?v=6"></script>
+<script src="data.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
