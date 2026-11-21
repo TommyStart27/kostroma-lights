@@ -634,7 +634,7 @@ function selectLight(i, center) {
   $('eTitle').textContent = '#' + (i + 1) + '  ' + (L.name || (L.kind === 'P' ? 'Пешеходный переход' : 'Без названия'));
   $('eSub').textContent = (L.kind === 'X' ? 'Перекрёсток' : 'Пешеходный переход') + ' · точек в OSM: ' + L.n;
   $('fG').value = T.g ?? ''; $('fY').value = T.y ?? ''; $('fR').value = T.r ?? ''; $('fA').value = T.a != null ? fmtT(T.a) : '';
-  if (!S.meas || S.meas.id !== i) S.meas = { id: i };
+  if (S.meas && S.meas.id !== i) S.meas = null;
   const sel = $('fMain'); sel.innerHTML = '';
   const opts = L.streets.length ? L.streets : ['—'];
   for (const s of opts) { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); }
@@ -642,42 +642,54 @@ function selectLight(i, center) {
   renderLightList(); tickEditor(); draw();
   const it = $('lightList').querySelector('[data-i="' + i + '"]'); if (it) it.scrollIntoView({ block: 'nearest' });
 }
-// ---- замер у светофора: 4 кнопки, длительности считаются сами
+// ---- замер у светофора: кнопки «загорелся», цикл усредняется по нескольким кругам
+const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
+const r1 = v => Math.round(v * 10) / 10;
 function mark(k) {
   if (S.selected == null) return;
   const now = Date.now();
-  const m = (S.meas && S.meas.id === S.selected) ? S.meas : (S.meas = { id: S.selected });
-  const sec = ms => Math.round(ms / 100) / 10;
+  let m = (S.meas && S.meas.id === S.selected) ? S.meas : null;
+  if (!m || !m.cyc) m = S.meas = { id: S.selected, cyc: [], gr: [], ye: [], re: [] };
   const fresh = (t, lim) => t != null && now - t < lim;
-  if (k === 'gs') {
-    if (fresh(m.rs, 300000)) $('fR').value = sec(now - m.rs);
-    m.gs = now; m.ge = null; m.rs = null; $('fA').value = fmtT(now);
-  } else if (k === 'ge') {
-    if (fresh(m.gs, 300000)) $('fG').value = sec(now - m.gs);
-    m.ge = now;
-  } else if (k === 'rs') {
-    if (fresh(m.ge, 15000)) $('fY').value = sec(now - m.ge);
-    else if (m.ge == null && fresh(m.gs, 300000)) { $('fG').value = sec(now - m.gs); $('fY').value = 0; }
-    m.rs = now;
-  } else if (k === 're') {
-    if (fresh(m.rs, 300000)) $('fR').value = sec(now - m.rs);
-    m.gs = now; m.ge = null; m.rs = null; $('fA').value = fmtT(now);
+  const ago = t => (now - t) / 1000;
+  if (k === 'g') {
+    if (fresh(m.g, 300000) && ago(m.g) > 8) m.cyc.push(ago(m.g));
+    if (fresh(m.r, 300000)) m.re.push(ago(m.r));
+    m.g = now; m.y = null; m.r = null;
+  } else if (k === 'y') {
+    if (fresh(m.g, 300000)) m.gr.push(ago(m.g));
+    m.y = now;
+  } else if (k === 'r') {
+    if (fresh(m.y, 15000)) m.ye.push(ago(m.y));
+    else if (fresh(m.g, 300000)) m.gr.push(ago(m.g) - (m.ye.length ? avg(m.ye) : 0));
+    m.r = now; m.y = null;
   }
   m.last = k; m.t = now;
   try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
-  const g = parseFloat($('fG').value), r = parseFloat($('fR').value);
-  if (g > 0 && r > 0 && $('fA').value) saveLight(true);
+  // считаем фазы
+  const y = m.ye.length ? avg(m.ye) : 0;
+  const g = m.gr.length ? avg(m.gr) : null;
+  let r = null;
+  if (m.cyc.length && g != null) r = avg(m.cyc) - g - y;
+  else if (m.re.length) r = avg(m.re);
+  if (g != null) $('fG').value = r1(g);
+  $('fY').value = r1(y);
+  if (r != null && r > 0) $('fR').value = r1(r);
+  if (m.g) $('fA').value = fmtT(m.g);
+  if (g > 0 && r > 0 && m.g) saveLight(true);
   updMeas();
 }
 function updMeas() {
   const el = $('eMeas'); if (!el) return;
-  const m = S.meas;
-  document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(m && m.id === S.selected && m.last === b.dataset.mk)));
-  if (!m || m.id !== S.selected || !m.last) { el.textContent = 'Стоя у светофора, нажимайте кнопку в момент смены сигнала — секунды посчитаются сами. Хватит одного полного круга: начало зелёного → конец зелёного → начало красного → конец красного.'; return; }
+  const m = S.meas, mine = m && m.id === S.selected && m.last;
+  document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(mine && m.last === b.dataset.mk)));
+  if (!mine) { el.innerHTML = 'Стоя у светофора, жмите кнопку в момент, когда <b>загорается</b> сигнал. Минимум: зелёный → красный → зелёный. Чем больше кругов отметите кнопкой «Зелёный загорелся», тем точнее цикл.'; return; }
   const s = ((Date.now() - m.t) / 1000).toFixed(1);
-  const what = { gs: 'идёт зелёный', ge: 'горит жёлтый', rs: 'идёт красный', re: 'снова зелёный' }[m.last];
-  const next = { gs: 'Конец зелёного', ge: 'Начало красного', rs: 'Конец красного', re: 'Конец зелёного' }[m.last];
-  el.innerHTML = `⏱ ${what}: <b>${s} с</b> · дальше «${next}»`;
+  const what = { g: 'горит зелёный', y: 'горит жёлтый', r: 'горит красный' }[m.last];
+  const next = { g: 'Красный загорелся', y: 'Красный загорелся', r: 'Зелёный загорелся' }[m.last];
+  let acc = '';
+  if (m.cyc.length) { const c = avg(m.cyc); acc = ` · цикл <b>${c.toFixed(1)} с</b> по ${m.cyc.length} ${m.cyc.length === 1 ? 'кругу' : 'кругам'}, точность ≈ ±${(0.4 / m.cyc.length).toFixed(2)} с`; }
+  el.innerHTML = `⏱ ${what}: <b>${s} с</b> · дальше «${next}»${acc}`;
 }
 function tickEditor() {
   if (S.selected == null) return;
@@ -691,7 +703,7 @@ function saveTimings() { try { localStorage.setItem(LS_TIMINGS, JSON.stringify(S
 function saveLight(auto) {
   if (S.selected == null) return;
   let g = parseFloat($('fG').value), y = parseFloat($('fY').value || '0'), r = parseFloat($('fR').value), a = parseClock($('fA').value);
-  if (S.meas && S.meas.id === S.selected && S.meas.gs && fmtT(S.meas.gs) === $('fA').value.trim()) a = S.meas.gs;
+  if (S.meas && S.meas.id === S.selected && S.meas.g && fmtT(S.meas.g) === $('fA').value.trim()) a = S.meas.g;
   if (!(g > 0) || isNaN(r) || r < 0) { toast('Укажите зелёный и красный в секундах'); return; }
   if (a == null) { toast('Отметьте начало зелёного кнопкой или впишите время ЧЧ:ММ:СС'); return; }
   S.timings[S.selected] = { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
@@ -736,7 +748,7 @@ function bind() {
   $('depart').onchange = e => { S.depart = +e.target.value; computeRoute(); };
   $('lq').addEventListener('input', renderLightList);
   document.querySelectorAll('[data-mk]').forEach(b => b.onclick = () => mark(b.dataset.mk));
-  $('bReset').onclick = () => { S.meas = { id: S.selected }; updMeas(); toast('Начат новый замер'); };
+  $('bReset').onclick = () => { S.meas = null; updMeas(); toast('Начат новый замер'); };
   $('bSave').onclick = () => saveLight(false); $('bClear').onclick = clearLight;
   $('bExport').onclick = exportTimings;
   $('bImport').onclick = () => $('fileIn').click();

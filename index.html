@@ -80,6 +80,10 @@
   .mkb.g i{background:var(--g)}
   .mkb.r{border-color:color-mix(in srgb,var(--r) 55%,transparent);background:color-mix(in srgb,var(--r) 10%,transparent)}
   .mkb.r i{background:var(--r)}
+  .mkb.y{grid-column:1 / -1;padding:6px 10px;font-weight:500;font-size:12.5px;border-color:color-mix(in srgb,var(--y) 50%,transparent);background:color-mix(in srgb,var(--y) 8%,transparent)}
+  .mkb.y i{background:var(--y);width:11px;height:11px}
+  .mkb.y small{color:var(--muted);font-weight:400}
+  .mkb.g,.mkb.r{padding:12px 12px;font-size:14px}
   .mkb:active{transform:scale(.96)}
   .mkb.last{box-shadow:0 0 0 2px var(--accent)}
   .vals{display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr;gap:6px;margin-top:10px}
@@ -152,10 +156,9 @@
         <div class="sub" id="eSub"></div>
         <div class="row" id="mainRow"><label>Замеряю для улицы<select id="fMain"></select></label></div>
         <div class="mk">
-          <button class="mkb g" data-mk="gs"><i></i><span>Начало<br>зелёного</span></button>
-          <button class="mkb g" data-mk="ge"><i></i><span>Конец<br>зелёного</span></button>
-          <button class="mkb r" data-mk="rs"><i></i><span>Начало<br>красного</span></button>
-          <button class="mkb r" data-mk="re"><i></i><span>Конец<br>красного</span></button>
+          <button class="mkb g" data-mk="g"><i></i><span>Зелёный<br>загорелся</span></button>
+          <button class="mkb r" data-mk="r"><i></i><span>Красный<br>загорелся</span></button>
+          <button class="mkb y" data-mk="y"><i></i><span>Жёлтый загорелся <small>— необязательно</small></span></button>
         </div>
         <div class="live" id="eMeas"></div>
         <div class="vals">
