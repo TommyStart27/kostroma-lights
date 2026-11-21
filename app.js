@@ -365,6 +365,10 @@ function fitAll() {
   S.view.cx = (minx + maxx) / 2; S.view.cy = (miny + maxy) / 2;
   S.view.s = Math.min(W / (maxx - minx + 1500), H / (maxy - miny + 1500));
 }
+// экранные позиции треугольников-подъездов вокруг светофора
+function aprScreen(L, x, y, r) {
+  return approaches(L).map(a => { const rad = a.b * Math.PI / 180, ux = Math.sin(rad), uy = -Math.cos(rad), dd = r + 12; return { a, ux, uy, cx0: x - ux * dd, cy0: y - uy * dd }; });
+}
 function pathPts(pts) { ctx.moveTo(sx(pts[0][0]), sy(pts[0][1])); for (let i = 1; i < pts.length; i++) ctx.lineTo(sx(pts[i][0]), sy(pts[i][1])); }
 function visible(pts) { // грубая отсечка по рамке
   const x0 = wx(-50), x1 = wx(W + 50), y1 = wy(-50), y0 = wy(H + 50);
@@ -421,9 +425,8 @@ function render() {
     const x = sx(L.x), y = sy(L.y); if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
     const ph = phase(anyRec(L), now);
     const r = (L.kind === 'X' ? 6.5 : 4.5) * Math.max(0.85, Math.min(1.7, k));
-    if (s > 0.45 && S.graph) for (const a of approaches(L)) {   // подъезды: треугольник со стороны, откуда едут машины, цвет — их сигнал
-      const ep = effPhase(recFor(L, a.b, '', a.name), now), rad = a.b * Math.PI / 180, ux = Math.sin(rad), uy = -Math.cos(rad), dd = r + 12;
-      const cx0 = x - ux * dd, cy0 = y - uy * dd, sel = L.id === S.selected && S.ek && S.ek.split('|')[1] === a.k, z = sel ? 8 : 6;
+    if (s > 0.45 && S.graph) for (const q of aprScreen(L, x, y, r)) {   // подъезды: треугольник со стороны, откуда едут машины, цвет — их сигнал
+      const { a, cx0, cy0, ux, uy } = q, ep = effPhase(recFor(L, a.b, '', a.name), now), sel = L.id === S.selected && S.ek && S.ek.split('|')[1] === a.k, z = sel ? 8 : 6;
       ctx.beginPath(); ctx.moveTo(cx0 + ux * z, cy0 + uy * z); ctx.lineTo(cx0 - ux * z * .7 - uy * z * .8, cy0 - uy * z * .7 + ux * z * .8); ctx.lineTo(cx0 - ux * z * .7 + uy * z * .8, cy0 - uy * z * .7 - ux * z * .8); ctx.closePath();
       ctx.fillStyle = css(ep ? (ep.s === 'G' ? '--g' : ep.s === 'Y' ? '--y' : '--r') : '--none'); ctx.fill();
       if (sel) { ctx.lineWidth = 1.5; ctx.strokeStyle = css('--accent'); ctx.stroke(); }
@@ -532,6 +535,12 @@ function onTap(px, py) {
     updateRouteUI(); computeRoute(); return;
   }
   if (!$('ask').hidden) { hideAsk(); return; }
+  if (S.view.s > 0.45 && S.graph) {   // нажали на треугольник-подъезд — сразу этот светофор и это направление
+    const k = Math.max(0.85, Math.min(1.7, Math.max(0.35, Math.min(3, S.view.s / 0.12)))); let hit = null, hd = 13;
+    for (const L of liveLights()) { const x = sx(L.x), y = sy(L.y); if (Math.abs(x - px) > 60 || Math.abs(y - py) > 60) continue;
+      for (const q of aprScreen(L, x, y, (L.kind === 'X' ? 6.5 : 4.5) * k)) { const d = Math.hypot(q.cx0 - px, q.cy0 - py); if (d < hd) { hd = d; hit = [L.id, `${L.id}|${q.a.k}`]; } } }
+    if (hit) { selectLight(hit[0], false, hit[1]); showTab('lights'); return; }
+  }
   let best = null, bd = 1e9;
   for (const L of liveLights()) { const d = Math.hypot(sx(L.x) - px, sy(L.y) - py); if (d < bd) { bd = d; best = L; } }
   if (best && bd < 20) { selectLight(best.id, false); showTab('lights'); return; }
@@ -865,6 +874,7 @@ function trackPush(x, y, sp, t) {
   tr.push({ x, y, t, sp: sp ?? 0 });
   while (tr.length && t - tr[0].t > 120000) tr.shift();
   checkStop();
+  if (window.gwAuto && gwAuto.on) gwAuto.onTrack(tr[tr.length - 1]);
 }
 function headingNow() {
   const tr = S.trk; if (!tr || tr.length < 2) return null;
@@ -897,6 +907,7 @@ function checkStop() {
   st.done = true; st.at = [c.x, c.y];
   const det = detectAhead(); if (!det) return;
   const lbl = '#' + (det.L.id + 1) + ' ' + (det.L.name || 'светофор') + (det.a ? ' · ' + det.a.arrow + ' ' + det.a.from : '');
+  if (window.gwAuto && gwAuto.on) { selectLight(det.L.id, false, det.key); gwAuto.onStop(det, lbl); return; }
   if (window.gwCamera && gwCamera.isOpen()) { selectLight(det.L.id, false, det.key); gwCamera.retarget(lbl); return; }
   ask('Стоите у ' + lbl + '?', [
     ['📷 Замер камерой', () => { selectLight(det.L.id, true, det.key); showTab('lights'); window.gwCamera && gwCamera.open(true); }, true],
