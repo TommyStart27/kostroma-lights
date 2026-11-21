@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Светофоры Костромы</title>
+<meta name="description" content="Карта Костромы с таймингами светофоров и маршрутами с учётом ожидания на красном.">
+<meta name="theme-color" content="#2f5bd3">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Светофоры">
+<style>
+  :root{
+    --land:#f2efe9; --panel:#ffffff; --ink:#1d1d1b; --muted:#6b6a64; --line:#e3e1da;
+    --water:#a9cde8; --r1:#f3b44a; --r2:#f8d48b; --r3:#ffffff; --r4:#ffffff; --path:#b9a98e; --case:#d2ccc0;
+    --route:#2f6df6; --routecase:#ffffff;
+    --g:#1f9d55; --y:#e0a100; --r:#d64032; --none:#9a978f; --accent:#2f5bd3;
+    --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --land:#1e2023; --panel:#26282c; --ink:#ecebe7; --muted:#a3a19a; --line:#3a3c40;
+      --water:#253b52; --r1:#a77a2c; --r2:#7d6a45; --r3:#4b4d52; --r4:#3c3e43; --path:#5b554b; --case:#17181a;
+      --route:#6c9bff; --routecase:#1e2023; --none:#77756f; --accent:#7c9cff; }
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--land);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+  #app{display:flex;height:100%}
+  #mapwrap{position:relative;flex:1;min-width:0;overflow:hidden;touch-action:none}
+  #mapwrap.picking canvas{cursor:crosshair}
+  canvas{display:block;width:100%;height:100%;cursor:grab}
+  .searchbox{position:absolute;left:12px;right:60px;top:calc(12px + var(--safe-t));max-width:420px;z-index:5}
+  #q{width:100%;padding:11px 14px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;font-size:15px;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+  #results{margin-top:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;max-height:50vh;overflow:auto;box-shadow:0 4px 18px rgba(0,0,0,.15)}
+  .res{padding:9px 14px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;flex-direction:column}
+  .res:last-child{border-bottom:none}
+  .res span{color:var(--muted);font-size:12.5px}
+  .ctrl{position:absolute;right:12px;top:calc(12px + var(--safe-t));display:flex;flex-direction:column;gap:8px;z-index:4}
+  .ctrl button{width:42px;height:42px;padding:0;border-radius:12px;background:var(--panel);font-size:20px;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+  #speed{position:absolute;left:12px;bottom:40px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 12px;font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+  #side{width:380px;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  .tabs{display:flex;border-bottom:1px solid var(--line)}
+  .tab{flex:1;padding:12px 6px;border:none;border-radius:0;background:transparent;color:var(--muted);font-weight:600;border-bottom:2px solid transparent}
+  .tab.on{color:var(--ink);border-bottom-color:var(--accent)}
+  .pane{overflow:auto;flex:1;min-height:0;padding:14px 16px calc(14px + var(--safe-b))}
+  h2{font-size:15px;margin:0 0 4px}
+  .sub,.hint{color:var(--muted);font-size:12.5px}
+  .hint{margin-top:8px}
+  button{font:inherit;padding:8px 12px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.on{background:color-mix(in srgb,var(--accent) 15%,transparent);border-color:var(--accent);color:var(--ink)}
+  .seg{display:flex;gap:6px;margin-top:10px}
+  .seg button{flex:1}
+  .pt{display:flex;align-items:center;gap:8px;margin-top:10px}
+  .pt .lab{width:22px;height:22px;border-radius:50%;color:#fff;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;flex:none}
+  .pt .val{flex:1;min-width:0;font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row{display:flex;gap:8px;margin-top:10px}
+  .row label{flex:1;font-size:12px;color:var(--muted)}
+  input[type=number],input[type=text],input[type=search],select{width:100%;margin-top:3px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit;font-size:15px}
+  select option{background:var(--panel)}
+  .btns{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  .sum{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:14px}
+  .sum div{background:color-mix(in srgb,var(--ink) 5%,transparent);border-radius:9px;padding:8px;display:flex;flex-direction:column}
+  .sum b{font-size:15px}.sum span{font-size:11.5px;color:var(--muted)}
+  .lst{margin-top:10px;border-top:1px solid var(--line)}
+  .li{display:flex;align-items:center;gap:9px;padding:8px 2px;border-bottom:1px solid var(--line);cursor:pointer}
+  .li.sel{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+  .dot{width:12px;height:12px;border-radius:50%;flex:none;border:2px solid var(--none)}
+  .dot.on{border:none}
+  .num{font-variant-numeric:tabular-nums;color:var(--muted);width:32px;flex:none;font-size:12px}
+  .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tm{font-variant-numeric:tabular-nums;font-size:12px;color:var(--muted);white-space:nowrap}
+  #editor{border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
+  .live{margin-top:10px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--ink) 5%,transparent);font-variant-numeric:tabular-nums}
+  #msg{position:fixed;left:50%;bottom:calc(24px + var(--safe-b));transform:translateX(-50%);background:var(--ink);color:var(--land);padding:9px 14px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20;max-width:90vw;text-align:center}
+  #msg.show{opacity:.94}
+  #loading{position:absolute;left:50%;top:calc(70px + var(--safe-t));transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:13px;display:flex;gap:8px;align-items:center;z-index:6}
+  #loading[hidden]{display:none}
+  .spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .attr{position:absolute;right:8px;bottom:6px;font-size:10.5px;color:var(--muted);background:color-mix(in srgb,var(--land) 80%,transparent);padding:1px 5px;border-radius:4px}
+  .attr a{color:inherit}
+  @media (max-width:759px){
+    #app{flex-direction:column}
+    #side{position:fixed;left:0;right:0;bottom:0;width:auto;height:auto;max-height:62vh;border-left:none;border-top:1px solid var(--line);border-radius:16px 16px 0 0;box-shadow:0 -4px 20px rgba(0,0,0,.15);z-index:10}
+    .pane{display:none}
+    body.sheet-open .pane:not([hidden]){display:block}
+    .tabs{padding-bottom:var(--safe-b)}
+    body.sheet-open .tabs{padding-bottom:0}
+    #speed{bottom:calc(64px + var(--safe-b))}
+    .attr{bottom:calc(52px + var(--safe-b))}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="mapwrap">
+    <canvas id="cv"></canvas>
+    <div class="searchbox"><input id="q" type="search" placeholder="Улица или № светофора" autocomplete="off"><div id="results" hidden></div></div>
+    <div class="ctrl">
+      <button id="locate" title="Моё местоположение" aria-label="Моё местоположение">◎</button>
+      <button id="zin" aria-label="Приблизить">+</button>
+      <button id="zout" aria-label="Отдалить">−</button>
+      <button id="zfit" aria-label="Весь город" style="font-size:15px">⤢</button>
+    </div>
+    <div id="loading" hidden><div class="spin"></div><span id="loadingText">Загрузка…</span></div>
+    <div id="speed" hidden></div>
+    <div class="attr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
+  </div>
+
+  <aside id="side">
+    <div class="tabs">
+      <button class="tab on" data-tab="route">Маршрут</button>
+      <button class="tab" data-tab="lights">Светофоры</button>
+      <button class="tab" data-tab="data">Данные</button>
+    </div>
+
+    <div class="pane" id="pane-route">
+      <div class="seg"><button data-mode="car" class="on">🚗 Авто</button><button data-mode="walk">🚶 Пешком</button></div>
+      <div class="seg"><button data-opt="fast" class="on">Быстрее (со светофорами)</button><button data-opt="short">Короче</button></div>
+      <div class="pt"><span class="lab" style="background:var(--g)">A</span><span class="val" id="aVal"></span><button id="meA" title="Моё местоположение">◎</button><button id="pickA">На карте</button></div>
+      <div class="pt"><span class="lab" style="background:var(--r)">B</span><span class="val" id="bVal"></span><button id="pickB">На карте</button></div>
+      <div class="row">
+        <label>Отправление
+          <select id="depart"><option value="0">сейчас</option><option value="1">через 1 мин</option><option value="2">через 2 мин</option><option value="5">через 5 мин</option><option value="10">через 10 мин</option><option value="15">через 15 мин</option><option value="30">через 30 мин</option></select>
+        </label>
+      </div>
+      <div class="btns"><button id="swap">⇅ Поменять</button><button id="clearRoute">Сбросить</button></div>
+      <div id="routeOut"></div>
+    </div>
+
+    <div class="pane" id="pane-lights" hidden>
+      <div class="sub" id="lCount"></div>
+      <div id="editor" hidden>
+        <h2 id="eTitle"></h2>
+        <div class="sub" id="eSub"></div>
+        <div class="row">
+          <label>Зелёный, с<input id="fG" type="number" min="0" step="0.5" inputmode="decimal"></label>
+          <label>Жёлтый, с<input id="fY" type="number" min="0" step="0.5" inputmode="decimal"></label>
+          <label>Красный, с<input id="fR" type="number" min="0" step="0.5" inputmode="decimal"></label>
+        </div>
+        <div class="row" id="mainRow"><label>Тайминг указан для улицы<select id="fMain"></select></label></div>
+        <div class="row"><label>Зелёный загорелся в (ЧЧ:ММ:СС)<input id="fA" type="text" placeholder="18:31:07" inputmode="numeric"></label></div>
+        <div class="btns">
+          <button id="bNow">Зелёный — сейчас</button>
+          <button id="bSave" class="primary">Сохранить</button>
+          <button id="bClear">Очистить</button>
+        </div>
+        <div class="live" id="eLive"></div>
+        <div class="hint">Стоя у светофора, нажмите «Зелёный — сейчас» в момент включения зелёного. Для перекрёстка выберите улицу, на которую смотрите: для поперечной улицы фазы считаются наоборот.</div>
+      </div>
+      <input id="lq" type="search" placeholder="Поиск по улице или номеру">
+      <div class="lst" id="lightList"></div>
+    </div>
+
+    <div class="pane" id="pane-data" hidden>
+      <h2>Карта</h2>
+      <div class="sub" id="dataInfo"></div>
+      <div class="btns"><button id="reload">Обновить карту из OpenStreetMap</button></div>
+      <h2 style="margin-top:18px">Тайминги светофоров</h2>
+      <div class="sub">Хранятся на этом устройстве. Чтобы перенести их на другое устройство или в Blender, сохраните файл и откройте его там.</div>
+      <div class="btns"><button id="bExport">Сохранить в файл</button><button id="bImport">Загрузить из файла</button></div>
+      <input id="fileIn" type="file" accept=".json,application/json" hidden>
+      <h2 style="margin-top:18px">О приложении</h2>
+      <div class="sub">Данные карты © участники OpenStreetMap, лицензия ODbL. Тайминги светофоров вносятся вручную и могут со временем «уплывать» на несколько секунд — точку отсчёта стоит иногда обновлять. Подсказки не заменяют внимание на дороге: ориентируйтесь на реальный сигнал светофора и соблюдайте ПДД.</div>
+    </div>
+  </aside>
+</div>
+<div id="msg"></div>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
