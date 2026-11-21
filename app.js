@@ -738,7 +738,15 @@ function tapBuilding(X, Y) {
 }
 
 // ======================= UI: ВКЛАДКИ ================================
+// свернуть / развернуть нижнюю панель целиком (видна вся карта)
+function setSideHidden(h) {
+  document.body.classList.toggle('side-hidden', h);
+  $('showSide').hidden = !h;
+  try { localStorage.setItem('kostroma_side_hidden', h ? '1' : ''); } catch (e) {}
+  requestAnimationFrame(resize);
+}
 function showTab(name) {
+  if (document.body.classList.contains('side-hidden')) setSideHidden(false);
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + name);
   document.body.classList.add('sheet-open');
@@ -947,6 +955,17 @@ function importTimings(file) {
 // ======================= ИНИЦИАЛИЗАЦИЯ ==============================
 function bind() {
   window.addEventListener('resize', resize);
+  $('hideSide').onclick = e => { e.stopPropagation(); setSideHidden(true); };
+  $('showSide').onclick = () => { setSideHidden(false); if (window.innerWidth < 760) document.body.classList.add('sheet-open'); };
+  // жест по вкладкам: вниз — свернуть (сначала содержимое, потом всю панель), вверх — раскрыть
+  { let y0 = null; const tb = document.querySelector('.tabs');
+    tb.addEventListener('pointerdown', e => { y0 = e.clientY; try { tb.setPointerCapture(e.pointerId); } catch (_) {} });
+    tb.addEventListener('pointerup', e => { if (y0 == null) return; const dy = e.clientY - y0; y0 = null; if (Math.abs(dy) > 40) { tb.dataset.sw = '1'; setTimeout(() => { tb.dataset.sw = ''; }, 400); }
+      if (dy > 40) { if (window.innerWidth < 760 && document.body.classList.contains('sheet-open')) document.body.classList.remove('sheet-open'); else setSideHidden(true); }
+      else if (dy < -40 && window.innerWidth < 760) document.body.classList.add('sheet-open'); });
+    tb.addEventListener('click', e => { if (tb.dataset.sw) { e.stopPropagation(); e.preventDefault(); } }, true);
+    tb.addEventListener('pointercancel', () => { y0 = null; }); }
+  try { if (localStorage.getItem('kostroma_side_hidden')) setSideHidden(true); } catch (e) {}
   $('zin').onclick = () => zoomBy(1.6); $('zout').onclick = () => zoomBy(1 / 1.6);
   $('zfit').onclick = () => { fitAll(); S.follow = false; draw(); };
   $('locate').onclick = locate;
@@ -956,7 +975,7 @@ function bind() {
   $('pinTo').onclick = () => pinTo('B'); $('pinFrom').onclick = () => pinTo('A'); $('pinX').onclick = hidePin;
   $('q').addEventListener('focus', e => doSearch(e.target.value));
   document.addEventListener('pointerdown', e => { if (!e.target.closest('.searchbox')) $('results').hidden = true; });
-  document.querySelectorAll('.tab').forEach(b => b.onclick = () => { if (b.classList.contains('on') && document.body.classList.contains('sheet-open') && window.innerWidth < 760) document.body.classList.remove('sheet-open'); else showTab(b.dataset.tab); });
+  document.querySelectorAll('.tab[data-tab]').forEach(b => b.onclick = () => { if (b.classList.contains('on') && document.body.classList.contains('sheet-open') && window.innerWidth < 760) document.body.classList.remove('sheet-open'); else showTab(b.dataset.tab); });
   $('pickA').onclick = () => pick('A'); $('pickB').onclick = () => pick('B');
   $('meA').onclick = () => { if (!S.me) { locate(); toast('Сначала дождитесь определения местоположения'); return; } S.A = [S.me.x, S.me.y]; S.meRef = S.A; S.Aname = null; updateRouteUI(); computeRoute(); };
   $('swap').onclick = () => { [S.A, S.B] = [S.B, S.A]; [S.Aname, S.Bname] = [S.Bname, S.Aname]; updateRouteUI(); computeRoute(); };

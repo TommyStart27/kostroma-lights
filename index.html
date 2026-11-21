@@ -50,6 +50,12 @@
   .tabs{display:flex;border-bottom:1px solid var(--line)}
   .tab{flex:1;padding:12px 6px;border:none;border-radius:0;background:transparent;color:var(--muted);font-weight:600;border-bottom:2px solid transparent}
   .tab.on{color:var(--ink);border-bottom-color:var(--accent)}
+  .tab.tabx{flex:none;width:48px;font-size:22px;line-height:1;color:var(--muted)}
+  .tabs{touch-action:none}
+  body.side-hidden #side{display:none}
+  #showSide{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(14px + var(--safe-b));background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:10px 16px;font-size:14px;font-weight:600;box-shadow:0 3px 14px rgba(0,0,0,.18);z-index:6;white-space:nowrap}
+  #showSide[hidden]{display:none}
+  body.side-hidden #msg{bottom:calc(72px + var(--safe-b))}
   .pane{overflow:auto;flex:1;min-height:0;padding:14px 16px calc(14px + var(--safe-b))}
   h2{font-size:15px;margin:0 0 4px}
   .sub,.hint{color:var(--muted);font-size:12.5px}
@@ -120,6 +126,8 @@
     #speed{bottom:calc(64px + var(--safe-b))}
     #pin{bottom:calc(62px + var(--safe-b))}
     .attr{bottom:calc(52px + var(--safe-b))}
+    body.side-hidden .attr{bottom:6px}
+    body.side-hidden #speed{bottom:calc(70px + var(--safe-b))}
   }
 </style>
 </head>
@@ -137,6 +145,7 @@
     <div id="loading" hidden><div class="spin"></div><span id="loadingText">Загрузка…</span></div>
     <div id="speed" hidden></div>
     <div id="pin" hidden><b id="pinName"></b><div class="pinb"><button id="pinTo" class="primary">Маршрут сюда</button><button id="pinFrom">Отсюда</button><button id="pinX" aria-label="Закрыть">✕</button></div></div>
+    <button id="showSide" hidden aria-label="Показать панель">☰ Открыть панель</button>
     <div class="attr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
   </div>
 
@@ -145,6 +154,7 @@
       <button class="tab on" data-tab="route">Маршрут</button>
       <button class="tab" data-tab="lights">Светофоры</button>
       <button class="tab" data-tab="data">Данные</button>
+      <button class="tab tabx" id="hideSide" aria-label="Свернуть панель" title="Свернуть панель — вся карта">⌄</button>
     </div>
 
     <div class="pane" id="pane-route">
@@ -203,8 +213,8 @@
   </aside>
 </div>
 <div id="msg"></div>
-<script src="data.js?v=9"></script>
-<script src="app.js?v=9"></script>
-<script src="camera.js?v=9"></script>
+<script src="data.js?v=10"></script>
+<script src="app.js?v=10"></script>
+<script src="camera.js?v=10"></script>
 </body>
 </html>
