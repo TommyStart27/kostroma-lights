@@ -575,57 +575,67 @@ function doSearch(q) {
 // Здания и номера домов из OpenStreetMap (кэш на устройстве) + онлайн-поиск через Nominatim
 const BLD_VERSION = 2;
 // Дома грузятся частями (сетка 4×6 квадратов), чтобы серверы OSM не обрывали большой запрос.
-// Прогресс сохраняется: если связь пропала, при следующем запуске загрузка продолжится с того же места.
+// Сначала центр города, два запроса параллельно к разным серверам. Прогресс сохраняется:
+// если приложение закрыли, при следующем запуске загрузка продолжится с того же места.
 const BLD_ROWS = 4, BLD_COLS = 6;
+function bldPill(t) { const L = $('loading'); if (t) { if (L.hidden || L.dataset.b) { L.dataset.b = '1'; L.hidden = false; $('loadingText').textContent = t; } } else if (L.dataset.b) { L.hidden = true; delete L.dataset.b; } }
 async function loadBuildings(force) {
   let d = force ? null : await kvGet('bld');
-  if (!d || d.v !== BLD_VERSION) d = { v: BLD_VERSION, p: [], a: [], next: 0, done: false };
+  if (!d || d.v !== BLD_VERSION) d = { v: BLD_VERSION, p: [], a: [], tiles: [], done: false };
+  const N = BLD_ROWS * BLD_COLS;
+  if (!d.tiles) { d.tiles = []; for (let i = 0; i < (d.next || 0); i++) d.tiles[i] = 1; }
   if (d.p.length) useBuildings(d);
   if (d.done) return;
-  const [la0, lo0, la1, lo1] = BBOX, N = BLD_ROWS * BLD_COLS;
-  let srv = 0, fails = 0;
-  while (d.next < N) {
-    const r = Math.floor(d.next / BLD_COLS), c = d.next % BLD_COLS;
-    const bb = [la0 + (la1 - la0) * r / BLD_ROWS, lo0 + (lo1 - lo0) * c / BLD_COLS, la0 + (la1 - la0) * (r + 1) / BLD_ROWS, lo0 + (lo1 - lo0) * (c + 1) / BLD_COLS].map(v => +v.toFixed(5));
-    const b = bb.join(',');
-    const q = `[out:json][timeout:120];(way["building"](${b});node["addr:housenumber"](${b}););out tags geom qt;`;
-    $('bldInfo').textContent = `Дома: загрузка ${Math.round(d.next / N * 100)}% (${d.p.length} зданий)…`;
-    let j = null;
-    try {
-      const resp = await fetchTimeout(OVERPASS[srv], { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, 150000);
-      if (resp.ok) j = await resp.json();
-    } catch (e) { }
-    if (!j || !j.elements) {
-      srv = (srv + 1) % OVERPASS.length;
-      if (++fails > OVERPASS.length * 2) { $('bldInfo').textContent = `Дома: загружено ${Math.round(d.next / N * 100)}%, серверы не отвечают — продолжу при следующем запуске. Онлайн-поиск адресов работает.`; return; }
-      continue;
-    }
-    fails = 0;
-    for (const e of j.elements) {
-      const t = e.tags || {};
-      const st = t['addr:street'] || t['addr:place'] || '', hn = t['addr:housenumber'] || '';
-      if (e.type === 'way' && e.geometry && e.geometry.length > 2) {
-        const g0 = e.geometry[0];   // здание на границе квадратов берём только в том квадрате, где его первая точка
-        if (g0.lat < bb[0] || g0.lat >= bb[2] || g0.lon < bb[1] || g0.lon >= bb[3]) continue;
-        const flat = [];
-        for (const g of e.geometry) { const xy = toXY(g.lat, g.lon); flat.push(Math.round(xy[0]), Math.round(xy[1])); }
-        d.p.push(flat);
-        if (hn) { let cx = 0, cy = 0; const n = flat.length / 2; for (let i = 0; i < flat.length; i += 2) { cx += flat[i]; cy += flat[i + 1]; } d.a.push([Math.round(cx / n), Math.round(cy / n), st, hn, t.name || '', d.p.length - 1]); }
-      } else if (e.type === 'node' && hn) {
-        const xy = toXY(e.lat, e.lon); d.a.push([Math.round(xy[0]), Math.round(xy[1]), st, hn, t.name || '', -1]);
+  const [la0, lo0, la1, lo1] = BBOX;
+  const box = i => { const r = Math.floor(i / BLD_COLS), c = i % BLD_COLS; return [la0 + (la1 - la0) * r / BLD_ROWS, lo0 + (lo1 - lo0) * c / BLD_COLS, la0 + (la1 - la0) * (r + 1) / BLD_ROWS, lo0 + (lo1 - lo0) * (c + 1) / BLD_COLS].map(v => +v.toFixed(5)); };
+  const queue = [...Array(N).keys()].filter(i => !d.tiles[i]).sort((i, j) => { const f = k => { const b = box(k); return ((b[0] + b[2]) / 2 - LAT0) ** 2 + (((b[1] + b[3]) / 2 - LON0) * 0.53) ** 2; }; return f(i) - f(j); });
+  const pct = () => Math.round(d.tiles.filter(Boolean).length / N * 100);
+  const show = () => { const t = `Дома: загрузка ${pct()}% (${d.p.length} зданий)…`; $('bldInfo').textContent = t; bldPill(t); };
+  show();
+  let fails = 0, saving = Promise.resolve();
+  async function worker(srv) {
+    while (queue.length) {
+      if (fails > OVERPASS.length * 3) return;
+      const i = queue.shift(), bb = box(i), b = bb.join(',');
+      const q = `[out:json][timeout:120];(way["building"](${b});node["addr:housenumber"](${b}););out tags geom qt;`;
+      let j = null;
+      try {
+        const resp = await fetchTimeout(OVERPASS[srv], { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, 150000);
+        if (resp.ok) j = await resp.json();
+      } catch (e) { }
+      if (!j || !j.elements) { queue.push(i); fails++; srv = (srv + 1) % OVERPASS.length; await new Promise(r => setTimeout(r, 2000)); continue; }
+      fails = 0;
+      for (const e of j.elements) {
+        const t = e.tags || {};
+        const st = t['addr:street'] || t['addr:place'] || '', hn = t['addr:housenumber'] || '';
+        if (e.type === 'way' && e.geometry && e.geometry.length > 2) {
+          const g0 = e.geometry[0];   // здание на границе квадратов берём только в том квадрате, где его первая точка
+          if (g0.lat < bb[0] || g0.lat >= bb[2] || g0.lon < bb[1] || g0.lon >= bb[3]) continue;
+          const flat = [];
+          for (const g of e.geometry) { const xy = toXY(g.lat, g.lon); flat.push(Math.round(xy[0]), Math.round(xy[1])); }
+          d.p.push(flat);
+          if (hn) { let cx = 0, cy = 0; const n = flat.length / 2; for (let k = 0; k < flat.length; k += 2) { cx += flat[k]; cy += flat[k + 1]; } d.a.push([Math.round(cx / n), Math.round(cy / n), st, hn, t.name || '', d.p.length - 1]); }
+        } else if (e.type === 'node' && hn) {
+          if (e.lat < bb[0] || e.lat >= bb[2] || e.lon < bb[1] || e.lon >= bb[3]) continue;
+          const xy = toXY(e.lat, e.lon); d.a.push([Math.round(xy[0]), Math.round(xy[1]), st, hn, t.name || '', -1]);
+        }
       }
+      d.tiles[i] = 1; d.done = d.tiles.filter(Boolean).length >= N; d.at = Date.now();
+      saving = saving.then(() => kvSet('bld', d));
+      useBuildings(d); if (!d.done) show();
     }
-    d.next++; d.done = d.next >= N; d.at = Date.now();
-    await kvSet('bld', d);
-    useBuildings(d);
   }
+  await Promise.all([worker(0), worker(1 % OVERPASS.length)]);
+  await saving;
+  bldPill(null);
+  if (!d.done) $('bldInfo').textContent = `Дома: загружено ${pct()}%, серверы OSM сейчас не отвечают — продолжу при следующем запуске. Онлайн-поиск адресов работает.`;
 }
 function useBuildings(d) {
   const bb = d.p.map(f => { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (let i = 0; i < f.length; i += 2) { if (f[i] < x0) x0 = f[i]; if (f[i] > x1) x1 = f[i]; if (f[i + 1] < y0) y0 = f[i + 1]; if (f[i + 1] > y1) y1 = f[i + 1]; } return [x0, y0, x1, y1]; });
   const hnOf = new Array(d.p.length).fill(null);
   for (const a of d.a) if (a[5] >= 0) hnOf[a[5]] = a;
   S.bld = { p: d.p, bb, a: d.a, hnOf };
-  $('bldInfo').textContent = d.done ? `Дома: ${d.p.length} зданий, ${d.a.length} адресов.` : `Дома: загрузка ${Math.round(d.next / (BLD_ROWS * BLD_COLS) * 100)}% (${d.p.length} зданий)…`;
+  if (d.done) $('bldInfo').textContent = `Дома: ${d.p.length} зданий, ${d.a.length} адресов.`;
   draw();
 }
 function drawBuildings(s) {
