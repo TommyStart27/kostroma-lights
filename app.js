@@ -233,16 +233,19 @@ function buildGraph(d) {
       adj[b].push([a, len, ow === 1 ? 0 : sp, walk, name]);
     }
   }
-  // узлы внутри светофорных объектов
-  const cl = new Int32Array(X.length).fill(-1);
-  const R = 40;
-  for (let i = 0; i < X.length; i++) {
-    for (const L of S.lights) { const r = L.kind === 'X' ? R : 22; if (Math.abs(L.x - X[i]) < r && Math.abs(L.y - Y[i]) < r && Math.hypot(L.x - X[i], L.y - Y[i]) < r) { cl[i] = L.id; break; } }
-  }
+  const cl = clusterNodes(X, Y);
   // сетка для поиска ближайшего узла
   const G = 100, grid = new Map();
   for (let i = 0; i < X.length; i++) { if (!adj[i].length) continue; const k = Math.floor(X[i] / G) + ',' + Math.floor(Y[i] / G); if (!grid.has(k)) grid.set(k, []); grid.get(k).push(i); }
   return { X, Y, adj, cl, grid, G };
+}
+// узлы дорог внутри светофорных объектов (перекрёсток — 40 м, переход — 22 м)
+function clusterNodes(X, Y) {
+  const cl = new Int32Array(X.length).fill(-1), LL = liveLights();
+  for (let i = 0; i < X.length; i++) {
+    for (const L of LL) { const r = L.kind === 'X' ? 40 : 22; if (Math.abs(L.x - X[i]) < r && Math.abs(L.y - Y[i]) < r && Math.hypot(L.x - X[i], L.y - Y[i]) < r) { cl[i] = L.id; break; } }
+  }
+  return cl;
 }
 function nearestNode(x, y, mode) {
   const g = S.graph; if (!g) return -1;
@@ -411,20 +414,21 @@ function render() {
   if (s > 0.25) drawLabels();
   // светофоры
   const now = Date.now(), showNum = s > 0.2;
-  for (const L of S.lights) {
+  for (const L of liveLights()) {
     const x = sx(L.x), y = sy(L.y); if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
     const ph = phase(S.timings[L.id], now);
     const r = (L.kind === 'X' ? 6.5 : 4.5) * Math.max(0.85, Math.min(1.7, k));
     if (L.id === S.selected) { ctx.beginPath(); ctx.arc(x, y, r + 6, 0, 7); ctx.fillStyle = css('--accent'); ctx.globalAlpha = .25; ctx.fill(); ctx.globalAlpha = 1; }
     ctx.beginPath(); ctx.arc(x, y, r, 0, 7);
     if (ph) { ctx.fillStyle = css(ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'); ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css('--panel'); ctx.stroke(); }
-    else { ctx.fillStyle = css('--panel'); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = css('--none'); ctx.stroke(); }
+    else { ctx.fillStyle = css('--panel'); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = css(L.mine ? '--accent' : '--none'); ctx.stroke(); }
     if (showNum) {
       ctx.font = '600 11px system-ui,sans-serif'; ctx.textBaseline = 'middle';
       ctx.lineWidth = 3; ctx.strokeStyle = css('--land'); ctx.strokeText(String(L.id + 1), x + r + 4, y); ctx.fillStyle = css('--ink'); ctx.fillText(String(L.id + 1), x + r + 4, y);
       if (ph && s > 0.4) { ctx.font = '11px system-ui,sans-serif'; ctx.strokeText(Math.ceil(ph.left) + ' с', x + r + 4, y + 13); ctx.fillStyle = css('--muted'); ctx.fillText(Math.ceil(ph.left) + ' с', x + r + 4, y + 13); }
     }
   }
+  if (S.addAt) { const x = sx(S.addAt[0]), y = sy(S.addAt[1]); ctx.beginPath(); ctx.arc(x, y, 9, 0, 7); ctx.setLineDash([4, 3]); ctx.lineWidth = 2.5; ctx.strokeStyle = css('--accent'); ctx.stroke(); ctx.setLineDash([]); }
   drawPin();
   // точки A/B
   for (const [P, lab, col] of [[S.A, 'A', '--g'], [S.B, 'B', '--r']]) {
@@ -476,11 +480,13 @@ function drawLabels() {
 }
 
 // ======================= ВЗАИМОДЕЙСТВИЕ С КАРТОЙ ====================
-const ptrs = new Map(); let drag = null, moved = false, pinch = null;
+const ptrs = new Map(); let drag = null, moved = false, pinch = null, lpTimer = 0, lpFired = false;
 cv.addEventListener('pointerdown', e => {
   cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (ptrs.size === 1) { drag = { x: e.clientX, y: e.clientY, cx: S.view.cx, cy: S.view.cy }; moved = false; }
-  else if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), s: S.view.s, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }; drag = null; moved = true; }
+  if (ptrs.size === 1) { drag = { x: e.clientX, y: e.clientY, cx: S.view.cx, cy: S.view.cy }; moved = false; lpFired = false;
+    clearTimeout(lpTimer); const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    lpTimer = setTimeout(() => { if (drag && !moved && ptrs.size === 1) { lpFired = true; longPress(px, py); } }, 550); }
+  else if (ptrs.size === 2) { clearTimeout(lpTimer); const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), s: S.view.s, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }; drag = null; moved = true; }
 });
 cv.addEventListener('pointermove', e => {
   if (!ptrs.has(e.pointerId)) return;
@@ -491,16 +497,18 @@ cv.addEventListener('pointermove', e => {
     S.view.s = Math.max(0.02, Math.min(4, pinch.s * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d));
     S.view.cx = X - (mx - W / 2) / S.view.s; S.view.cy = Y + (my - H / 2) / S.view.s; draw(); return;
   }
-  if (drag) { const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 4) { moved = true; S.follow = false; }
+  if (drag) { const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 6) { moved = true; S.follow = false; clearTimeout(lpTimer); }
     if (moved) { S.view.cx = drag.cx - dx / S.view.s; S.view.cy = drag.cy + dy / S.view.s; draw(); } }
 });
 function endPtr(e) {
   if (!ptrs.has(e.pointerId)) return;
   ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null;
-  if (drag && !moved && ptrs.size === 0) { const r = cv.getBoundingClientRect(); onTap(e.clientX - r.left, e.clientY - r.top); }
+  clearTimeout(lpTimer);
+  if (drag && !moved && !lpFired && ptrs.size === 0) { const r = cv.getBoundingClientRect(); onTap(e.clientX - r.left, e.clientY - r.top); }
   if (ptrs.size === 0) drag = null;
 }
 cv.addEventListener('pointerup', endPtr); cv.addEventListener('pointercancel', endPtr);
+cv.addEventListener('contextmenu', e => { e.preventDefault(); if (!lpFired) { const r = cv.getBoundingClientRect(); lpFired = true; longPress(e.clientX - r.left, e.clientY - r.top); } });
 cv.addEventListener('wheel', e => {
   e.preventDefault(); const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, X = wx(mx), Y = wy(my);
   S.view.s = Math.max(0.02, Math.min(4, S.view.s * Math.exp(-e.deltaY * 0.0015)));
@@ -513,8 +521,9 @@ function onTap(px, py) {
     S[S.pickMode] = p; S[S.pickMode + 'name'] = null; S.pickMode = null; $('mapwrap').classList.remove('picking');
     updateRouteUI(); computeRoute(); return;
   }
+  if (!$('ask').hidden) { hideAsk(); return; }
   let best = null, bd = 1e9;
-  for (const L of S.lights) { const d = Math.hypot(sx(L.x) - px, sy(L.y) - py); if (d < bd) { bd = d; best = L; } }
+  for (const L of liveLights()) { const d = Math.hypot(sx(L.x) - px, sy(L.y) - py); if (d < bd) { bd = d; best = L; } }
   if (best && bd < 20) { selectLight(best.id, false); showTab('lights'); return; }
   if (!tapBuilding(wx(px), wy(py)) && S.pin) hidePin();
 }
@@ -560,9 +569,9 @@ function doSearch(q) {
   const out = [];
   const nAddr = addrSearch(q, out);
   const num = q.replace(/^#/, '');
-  if (/^\d+$/.test(num) && S.lights[+num - 1]) out.push({ t: 'Светофор #' + num, sub: S.lights[+num - 1].name, go: () => { selectLight(+num - 1, true); showTab('lights'); } });
+  if (/^\d+$/.test(num) && S.lights[+num - 1] && !S.lights[+num - 1].off) out.push({ t: 'Светофор #' + num, sub: S.lights[+num - 1].name, go: () => { selectLight(+num - 1, true); showTab('lights'); } });
   for (const st of streetIndex) if (st.name.toLowerCase().includes(q)) { out.push({ t: st.name, sub: 'улица', go: () => { S.view.cx = (st.x0 + st.x1) / 2; S.view.cy = (st.y0 + st.y1) / 2; S.view.s = Math.min(1.2, Math.max(0.12, Math.min(W / (st.x1 - st.x0 + 300), H / (st.y1 - st.y0 + 300)))); S.follow = false; draw(); } }); if (out.length > 12) break; }
-  for (const L of S.lights) if (L.name.toLowerCase().includes(q) && out.length < 20) out.push({ t: 'Светофор #' + (L.id + 1), sub: L.name, go: () => { selectLight(L.id, true); showTab('lights'); } });
+  for (const L of liveLights()) if (L.name.toLowerCase().includes(q) && out.length < 20) out.push({ t: 'Светофор #' + (L.id + 1), sub: L.name, go: () => { selectLight(L.id, true); showTab('lights'); } });
   if (!out.length) out.push({ t: 'Не найдено в скачанной карте', sub: S.bld ? 'Попробуйте онлайн-поиск ниже' : 'Дома ещё не загружены — попробуйте онлайн-поиск', go: null });
   out.push({ t: '🔎 Искать онлайн', sub: '«' + q + '» — адреса, организации, остановки', go: () => onlineSearch(q), keep: true });
   for (const o of out) { const d = document.createElement('div'); d.className = 'res'; d.innerHTML = '<b></b><span></span>'; d.querySelector('b').textContent = o.t; d.querySelector('span').textContent = o.sub;
@@ -751,6 +760,103 @@ function tapBuilding(X, Y) {
   return false;
 }
 
+// ======================= МОИ СВЕТОФОРЫ ==============================
+// Добавленные вручную светофоры и убранные лишние. Хранятся на устройстве и попадают в экспорт.
+const LS_MY = 'kostroma_mylights_v1';
+const liveLights = () => S.lights.filter(L => !L.off);
+function loadMy() {
+  let m = { add: [], del: [] };
+  try { m = Object.assign(m, JSON.parse(localStorage.getItem(LS_MY) || '{}')); } catch (e) {}
+  applyMy(m);
+}
+function applyMy(m) {
+  S.my = { add: m.add || [], del: m.del || [] };
+  S.lights.length = LIGHTS_BASE.length;
+  for (const L of S.lights) L.off = false;
+  for (const a of S.my.add.slice().sort((p, q) => p.id - q.id)) {
+    a.id = S.lights.length;      // номера идут подряд после светофоров из OSM
+    S.lights.push({ id: a.id, x: a.x, y: a.y, kind: a.kind, n: 0, name: a.name || '', streets: a.name ? a.name.split(' / ') : [], mine: true });
+  }
+  for (const id of S.my.del) if (S.lights[id] && !S.lights[id].mine) S.lights[id].off = true;
+}
+function saveMy() {
+  try { localStorage.setItem(LS_MY, JSON.stringify(S.my)); } catch (e) { toast('Не удалось сохранить на устройстве'); }
+  if (S.graph) S.graph.cl = clusterNodes(S.graph.X, S.graph.Y);
+  if (S.route) computeRoute();
+  renderLightList(); renderMyInfo(); draw();
+}
+function streetsNear(x, y) {
+  const g = S.graph, names = new Map(); if (!g) return [];
+  const k0 = Math.floor(x / g.G), k1 = Math.floor(y / g.G);
+  for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const n of g.grid.get((k0 + i) + ',' + (k1 + j)) || []) {
+    const d = Math.hypot(g.X[n] - x, g.Y[n] - y); if (d > 45) continue;
+    for (const e of g.adj[n]) if (e[4] && e[2] > 0) names.set(e[4], Math.min(names.get(e[4]) ?? 1e9, d));
+  }
+  return [...names.entries()].sort((a, b) => a[1] - b[1]).map(e => e[0]).slice(0, 2);
+}
+function addLight(x, y, kind) {
+  const st = streetsNear(x, y);
+  const a = { id: S.lights.length, x: Math.round(x), y: Math.round(y), kind, name: st.join(' / ') };
+  S.my.add.push(a); applyMy(S.my); saveMy();
+  selectLight(a.id, false); showTab('lights');
+  toast('Светофор #' + (a.id + 1) + ' добавлен' + (a.name ? ': ' + a.name : ''));
+}
+function removeLight(i) {
+  const L = S.lights[i]; if (!L) return;
+  delete S.timings[i]; saveTimings();
+  if (L.mine) {
+    // убираем добавленный: номера следующих моих светофоров сдвигаются, их тайминги переносим
+    const T = {}; for (const [k, v] of Object.entries(S.timings)) { const n = +k; if (n < i) T[n] = v; else if (n > i) T[n - 1] = v; }
+    S.timings = T; saveTimings();
+    S.my.add = S.my.add.filter(a => a.id !== i);
+  } else if (!S.my.del.includes(i)) S.my.del.push(i);
+  applyMy(S.my);
+  S.selected = null; $('editor').hidden = true; hideAsk();
+  saveMy(); toast('Светофор убран с карты');
+}
+function restoreRemoved() { const n = S.my.del.length; S.my.del = []; applyMy(S.my); saveMy(); toast('Возвращено светофоров: ' + n); }
+function renderMyInfo() {
+  const el = $('myInfo'); if (!el) return;
+  el.textContent = `Добавлено вами: ${S.my.add.length}, убрано: ${S.my.del.length}.`;
+  $('bRestore').hidden = !S.my.del.length;
+}
+// карточка-вопрос внизу карты
+function ask(title, buttons) {
+  $('askT').textContent = title; const b = $('askB'); b.innerHTML = '';
+  for (const [label, fn, primary] of buttons) { const e = document.createElement('button'); e.textContent = label; if (primary) e.className = 'primary'; e.onclick = () => { hideAsk(); fn && fn(); }; b.appendChild(e); }
+  $('ask').hidden = false;
+}
+function hideAsk() { $('ask').hidden = true; S.addAt = null; draw(); }
+function askAdd(x, y, hint) {
+  S.addAt = [x, y]; draw();
+  const st = streetsNear(x, y);
+  ask((hint || 'Добавить светофор здесь?') + (st.length ? ' · ' + st.join(' / ') : ''), [
+    ['🚦 Перекрёсток', () => addLight(x, y, 'X'), true], ['🚶 Переход', () => addLight(x, y, 'P')], ['Отмена', null]]);
+}
+function longPress(px, py) {
+  if (S.pickMode) return;
+  const X = wx(px), Y = wy(py);
+  let best = null, bd = 1e9;
+  for (const L of liveLights()) { const d = Math.hypot(sx(L.x) - px, sy(L.y) - py); if (d < bd) { bd = d; best = L; } }
+  if (best && bd < 22) { askRemove(best.id); return; }
+  if (navigator.vibrate) navigator.vibrate(15);
+  askAdd(X, Y);
+}
+function iAmAtLight() {
+  if (!S.me) { locate(false); toast('Жду местоположение — нажмите ещё раз через пару секунд'); return; }
+  let best = null, bd = 35;
+  for (const L of liveLights()) { const d = Math.hypot(L.x - S.me.x, L.y - S.me.y); if (d < bd) { bd = d; best = L; } }
+  if (best) { selectLight(best.id, true); toast('Рядом уже есть светофор #' + (best.id + 1)); return; }
+  S.view.cx = S.me.x; S.view.cy = S.me.y; if (S.view.s < 0.6) S.view.s = 0.9;
+  if (window.innerWidth < 760) document.body.classList.remove('sheet-open');
+  askAdd(S.me.x, S.me.y, 'Добавить светофор в вашей точке?');
+}
+function askRemove(i) {
+  const L = S.lights[i];
+  ask(`Убрать светофор #${i + 1}${L.name ? ' (' + L.name + ')' : ''} с карты?` + (L.mine ? '' : ' Его можно будет вернуть во вкладке «Данные».'), [
+    ['Убрать', () => removeLight(i), true], ['Отмена', null]]);
+}
+
 // ======================= UI: ВКЛАДКИ ================================
 // свернуть / развернуть нижнюю панель целиком (видна вся карта)
 function setSideHidden(h) {
@@ -811,7 +917,7 @@ const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<':
 function renderLightList() {
   const q = $('lq').value.trim().toLowerCase(), now = Date.now(), box = $('lightList');
   box.innerHTML = '';
-  for (const L of S.lights) {
+  for (const L of liveLights()) {
     const name = L.name || (L.kind === 'P' ? 'Пешеходный переход' : 'Без названия');
     if (q && !(String(L.id + 1) === q.replace('#', '') || name.toLowerCase().includes(q))) continue;
     const ph = phase(S.timings[L.id], now);
@@ -821,7 +927,7 @@ function renderLightList() {
     d.onclick = () => selectLight(L.id, true);
     box.appendChild(d);
   }
-  $('lCount').textContent = `${S.lights.length} объектов, с таймингами: ${Object.keys(S.timings).length}`;
+  $('lCount').textContent = `${liveLights().length} объектов, с таймингами: ${Object.keys(S.timings).length}` + (S.my && S.my.add.length ? `, ваших: ${S.my.add.length}` : '') + ' · долгое нажатие на карте — добавить';
 }
 function parseClock(s) {
   const m = String(s).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/); if (!m) return null;
@@ -832,7 +938,7 @@ function selectLight(i, center) {
   if (center) { S.view.cx = L.x; S.view.cy = L.y; if (S.view.s < 0.35) S.view.s = 0.6; S.follow = false; }
   $('editor').hidden = false;
   $('eTitle').textContent = '#' + (i + 1) + '  ' + (L.name || (L.kind === 'P' ? 'Пешеходный переход' : 'Без названия'));
-  $('eSub').textContent = (L.kind === 'X' ? 'Перекрёсток' : 'Пешеходный переход') + ' · точек в OSM: ' + L.n;
+  $('eSub').textContent = (L.kind === 'X' ? 'Перекрёсток' : 'Пешеходный переход') + (L.mine ? ' · добавлен вами' : ' · точек в OSM: ' + L.n);
   $('fG').value = T.g ?? ''; $('fY').value = T.y ?? ''; $('fR').value = T.r ?? ''; $('fA').value = T.a != null ? fmtT(T.a) : '';
   if (S.meas && S.meas.id !== i) S.meas = null;
   const sel = $('fMain'); sel.innerHTML = '';
@@ -949,7 +1055,7 @@ function saveLight(auto) {
 }
 function clearLight() { if (S.selected == null) return; delete S.timings[S.selected]; saveTimings(); selectLight(S.selected, false); if (S.route) computeRoute(); }
 function exportTimings() {
-  const out = { app: 'kostroma-lights', v: 1, saved: new Date().toISOString(), lights: Object.entries(S.timings).map(([k, T]) => ({ id: +k + 1, name: S.lights[k].name, x: Math.round(S.lights[k].x), y: Math.round(S.lights[k].y), green: T.g, yellow: T.y, red: T.r, green_at: fmtT(T.a), green_at_ms: T.a, main: T.main })) };
+  const out = { app: 'kostroma-lights', v: 1, saved: new Date().toISOString(), my_lights: S.my.add.map(a => ({ id: a.id + 1, kind: a.kind, name: a.name, x: a.x, y: a.y, lat: +toLL(a.x, a.y)[0].toFixed(6), lon: +toLL(a.x, a.y)[1].toFixed(6) })), removed: S.my.del.map(i => i + 1), lights: Object.entries(S.timings).map(([k, T]) => ({ id: +k + 1, name: S.lights[k].name, x: Math.round(S.lights[k].x), y: Math.round(S.lights[k].y), green: T.g, yellow: T.y, red: T.r, green_at: fmtT(T.a), green_at_ms: T.a, main: T.main })) };
   const blob = new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'светофоры-кострома.json'; document.body.appendChild(a); a.click(); a.remove();
   toast('Файл с таймингами сохранён');
@@ -959,6 +1065,7 @@ function importTimings(file) {
   fr.onload = () => {
     try {
       const j = JSON.parse(fr.result); let n = 0;
+      if (j.my_lights || j.removed) { applyMy({ add: (j.my_lights || []).map(a => ({ id: a.id - 1, x: a.x, y: a.y, kind: a.kind === 'P' ? 'P' : 'X', name: a.name || '' })), del: (j.removed || []).map(i => i - 1) }); saveMy(); }
       for (const l of j.lights || []) { const i = l.id - 1; if (!S.lights[i]) continue; S.timings[i] = { g: +l.green, y: +l.yellow || 0, r: +l.red, a: l.green_at_ms || parseClock(l.green_at), main: l.main }; n++; }
       saveTimings(); renderLightList(); draw(); toast('Загружено таймингов: ' + n);
     } catch (e) { toast('Файл не похож на файл таймингов'); }
@@ -986,6 +1093,7 @@ function bind() {
   $('q').addEventListener('input', e => doSearch(e.target.value));
   $('q').addEventListener('keydown', e => { if (e.key !== 'Enter') return; e.preventDefault(); const q = e.target.value.trim(); if (!q) return;
     if (S.searchFirst) { S.searchFirst.go(); $('results').hidden = true; e.target.blur(); } else onlineSearch(q); });
+  $('bHere').onclick = iAmAtLight; $('bDelLight').onclick = () => { if (S.selected != null) askRemove(S.selected); }; $('bRestore').onclick = restoreRemoved;
   $('pinTo').onclick = () => pinTo('B'); $('pinFrom').onclick = () => pinTo('A'); $('pinX').onclick = hidePin;
   $('q').addEventListener('focus', e => doSearch(e.target.value));
   document.addEventListener('pointerdown', e => { if (!e.target.closest('.searchbox')) $('results').hidden = true; });
@@ -1018,7 +1126,7 @@ function bind() {
     const now = Date.now(); $('lightList').querySelectorAll('.li').forEach(d => { const ph = phase(S.timings[d.dataset.i], now); if (ph) { const dot = d.querySelector('.dot'); dot.className = 'dot on'; dot.style.background = `var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})`; d.querySelector('.tm').textContent = Math.ceil(ph.left) + ' с'; } }); } }, 500);
 }
 (function init() {
-  bind(); resize(); fitAll(); useFallback(); updateRouteUI(); renderLightList();
+  loadMy(); renderMyInfo(); bind(); resize(); fitAll(); useFallback(); updateRouteUI(); renderLightList();
   loadData(false);
   locate(true);   // местоположение отслеживается сразу при запуске
   document.addEventListener('visibilitychange', () => { if (!document.hidden && geoWatch == null) locate(true); });

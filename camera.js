@@ -37,7 +37,7 @@
   function nearestLight() {
     if (!S.me) return null;
     let best = null, bd = 160;
-    for (const L of S.lights) { const d = Math.hypot(L.x - S.me.x, L.y - S.me.y); if (d < bd) { bd = d; best = L; } }
+    for (const L of S.lights) { if (L.off) continue; const d = Math.hypot(L.x - S.me.x, L.y - S.me.y); if (d < bd) { bd = d; best = L; } }
     return best;
   }
 

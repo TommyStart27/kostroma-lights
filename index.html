@@ -42,6 +42,10 @@
   .ctrl button{width:42px;height:42px;padding:0;border-radius:12px;background:var(--panel);font-size:20px;box-shadow:0 2px 10px rgba(0,0,0,.12)}
   #pin{position:absolute;left:12px;right:12px;bottom:calc(16px + var(--safe-b));max-width:420px;margin:0 auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.18);z-index:7}
   #pin b{display:block;font-size:14.5px;margin-bottom:8px}
+  #ask{position:absolute;left:12px;right:12px;bottom:calc(16px + var(--safe-b));max-width:440px;margin:0 auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.18);z-index:8}
+  #ask b{display:block;font-size:14px;margin-bottom:8px;font-weight:600}
+  #ask .pinb{flex-wrap:wrap}
+  canvas{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
   .pinb{display:flex;gap:8px}
   .pinb button{padding:7px 12px}
   .pinb #pinX{margin-left:auto}
@@ -125,6 +129,8 @@
     body.sheet-open .tabs{padding-bottom:0}
     #speed{bottom:calc(64px + var(--safe-b))}
     #pin{bottom:calc(62px + var(--safe-b))}
+    #ask{bottom:calc(62px + var(--safe-b))}
+    body.side-hidden #ask, body.side-hidden #pin{bottom:calc(66px + var(--safe-b))}
     .attr{bottom:calc(52px + var(--safe-b))}
     body.side-hidden .attr{bottom:6px}
     body.side-hidden #speed{bottom:calc(70px + var(--safe-b))}
@@ -144,6 +150,7 @@
     </div>
     <div id="loading" hidden><div class="spin"></div><span id="loadingText">Загрузка…</span></div>
     <div id="speed" hidden></div>
+    <div id="ask" hidden><b id="askT"></b><div class="pinb" id="askB"></div></div>
     <div id="pin" hidden><b id="pinName"></b><div class="pinb"><button id="pinTo" class="primary">Маршрут сюда</button><button id="pinFrom">Отсюда</button><button id="pinX" aria-label="Закрыть">✕</button></div></div>
     <button id="showSide" hidden aria-label="Показать панель">☰ Открыть панель</button>
     <div class="attr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
@@ -173,6 +180,7 @@
 
     <div class="pane" id="pane-lights" hidden>
       <div class="sub" id="lCount"></div>
+      <div class="btns sm"><button id="bHere">📍 Я у светофора — добавить</button></div>
       <div id="editor" hidden>
         <h2 id="eTitle"></h2>
         <div class="sub" id="eSub"></div>
@@ -192,6 +200,7 @@
           <label>Зелёный в<input id="fA" type="text" placeholder="18:31:07" inputmode="numeric"></label>
         </div>
         <div class="btns sm"><button id="bSave" class="primary">Сохранить</button><button id="bReset">Новый замер</button><button id="bClear">Удалить</button></div>
+        <button id="bDelLight" type="button" style="width:100%;margin-top:8px;padding:7px 10px;font-size:13px">🚫 Здесь нет светофора — убрать с карты</button>
         <div class="live" id="eLive"></div>
       </div>
       <input id="lq" type="search" placeholder="Поиск по улице или номеру">
@@ -206,6 +215,10 @@
       <h2 style="margin-top:18px">Тайминги светофоров</h2>
       <div class="sub">Хранятся на этом устройстве. Чтобы перенести их на другое устройство или в Blender, сохраните файл и откройте его там.</div>
       <div class="btns"><button id="bExport">Сохранить в файл</button><button id="bImport">Загрузить из файла</button></div>
+      <h2 style="margin-top:18px">Мои светофоры</h2>
+      <div class="sub">Долгое нажатие на карте — добавить светофор или убрать лишний. Правки хранятся на устройстве и сохраняются в файл вместе с таймингами.</div>
+      <div class="sub" id="myInfo"></div>
+      <div class="btns"><button id="bRestore" hidden>Вернуть убранные светофоры</button></div>
       <input id="fileIn" type="file" accept=".json,application/json" hidden>
       <h2 style="margin-top:18px">О приложении</h2>
       <div class="sub">Данные карты © участники OpenStreetMap, лицензия ODbL. Тайминги светофоров вносятся вручную и могут со временем «уплывать» на несколько секунд — точку отсчёта стоит иногда обновлять. Подсказки не заменяют внимание на дороге: ориентируйтесь на реальный сигнал светофора и соблюдайте ПДД.</div>
@@ -213,8 +226,8 @@
   </aside>
 </div>
 <div id="msg"></div>
-<script src="data.js?v=12"></script>
-<script src="app.js?v=12"></script>
-<script src="camera.js?v=12"></script>
+<script src="data.js?v=13"></script>
+<script src="app.js?v=13"></script>
+<script src="camera.js?v=13"></script>
 </body>
 </html>
