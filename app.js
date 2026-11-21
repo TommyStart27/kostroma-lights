@@ -645,14 +645,17 @@ function selectLight(i, center) {
 // ---- замер у светофора: кнопки «загорелся», цикл усредняется по нескольким кругам
 const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
 const r1 = v => Math.round(v * 10) / 10;
-function mark(k, tEv) {
+function mark(btn, tEv) {
   if (S.selected == null) return;
+  // 4 кнопки → 3 события: начало зелёного = конец красного, начало красного = конец зелёного
+  const k = { gs: 'g', re: 'g', ge: 'y', rs: 'r' }[btn] || btn;
   // время самого касания (а не обработки), если браузер его даёт
   const now = (tEv && Math.abs(tEv - Date.now()) < 1500) ? tEv : Date.now();
   let m = (S.meas && S.meas.id === S.selected) ? S.meas : null;
   if (!m || !m.cyc) m = S.meas = { id: S.selected, cyc: [], gr: [], ye: [], re: [] };
   const fresh = (t, lim) => t != null && now - t < lim;
   const ago = t => (now - t) / 1000;
+  if (k === m.lk && fresh(m.t, 2500)) { m.last = btn; updMeas(); return; }   // повтор того же момента (например «Конец красного» + «Начало зелёного»)
   if (k === 'g') {
     if (fresh(m.g, 300000) && ago(m.g) > 8) m.cyc.push(ago(m.g));
     if (fresh(m.r, 300000)) m.re.push(ago(m.r));
@@ -665,7 +668,7 @@ function mark(k, tEv) {
     else if (fresh(m.g, 300000)) m.gr.push(ago(m.g) - (m.ye.length ? avg(m.ye) : 0));
     m.r = now; m.y = null;
   }
-  m.last = k; m.t = now;
+  m.last = btn; m.lk = k; m.t = now;
   try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
   // считаем фазы
   const y = m.ye.length ? avg(m.ye) : 0;
@@ -684,10 +687,10 @@ function updMeas() {
   const el = $('eMeas'); if (!el) return;
   const m = S.meas, mine = m && m.id === S.selected && m.last;
   document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(mine && m.last === b.dataset.mk)));
-  if (!mine) { el.innerHTML = 'Стоя у светофора, жмите кнопку в момент, когда <b>загорается</b> сигнал. Минимум: зелёный → красный → зелёный. Чем больше кругов отметите кнопкой «Зелёный загорелся», тем точнее цикл.'; return; }
+  if (!mine) { el.innerHTML = 'Жмите кнопку в момент смены сигнала. Минимум: начало зелёного → начало красного → начало зелёного. «Конец зелёного» — по желанию, если хотите учесть жёлтый. Чем больше кругов, тем точнее цикл.'; return; }
   const s = ((Date.now() - m.t) / 1000).toFixed(1);
-  const what = { g: 'горит зелёный', y: 'горит жёлтый', r: 'горит красный' }[m.last];
-  const next = { g: 'Красный загорелся', y: 'Красный загорелся', r: 'Зелёный загорелся' }[m.last];
+  const what = { g: 'горит зелёный', y: 'горит жёлтый', r: 'горит красный' }[m.lk];
+  const next = { g: 'Конец зелёного» или «Начало красного', y: 'Начало красного', r: 'Начало зелёного' }[m.lk];
   let acc = '';
   if (m.cyc.length) { const c = avg(m.cyc); acc = ` · цикл <b>${c.toFixed(1)} с</b> по ${m.cyc.length} ${m.cyc.length === 1 ? 'кругу' : 'кругам'}, точность ≈ ±${(0.4 / m.cyc.length).toFixed(2)} с`; }
   el.innerHTML = `⏱ ${what}: <b>${s} с</b> · дальше «${next}»${acc}`;
