@@ -521,11 +521,11 @@ function onTap(px, py) {
 
 // ======================= ГЕОЛОКАЦИЯ =================================
 let geoWatch = null;
-function locate() {
-  if (!('geolocation' in navigator)) { toast('Геолокация недоступна в этом браузере'); return; }
+function locate(quiet) {
+  if (!('geolocation' in navigator)) { if (!quiet) toast('Геолокация недоступна в этом браузере'); return; }
   if (S.me) { S.follow = true; S.view.cx = S.me.x; S.view.cy = S.me.y; if (S.view.s < 0.4) S.view.s = 0.6; draw(); }
   if (geoWatch != null) return;
-  toast('Определяю местоположение…');
+  if (!quiet) toast('Определяю местоположение…');
   geoWatch = navigator.geolocation.watchPosition(p => {
     const [x, y] = toXY(p.coords.latitude, p.coords.longitude);
     const first = !S.me; S.me = { x, y, acc: p.coords.accuracy, sp: p.coords.speed };
@@ -534,7 +534,11 @@ function locate() {
     if (first && p.coords.accuracy > 300) toast('Точность ' + Math.round(p.coords.accuracy) + ' м — на ПК местоположение примерное', 4000);
     draw(); updateSpeed();
     if (S.wantMeA && !S.A) { S.wantMeA = false; S.A = [x, y]; S.meRef = S.A; S.Aname = null; updateRouteUI(); computeRoute(); }
-  }, err => { toast(err.code === 1 ? 'Доступ к геолокации запрещён — разрешите его в настройках браузера' : 'Не удалось определить местоположение'); geoWatch = null; },
+  }, err => {
+    // запрет доступа — останавливаем слежение; временные сбои (нет спутников, тайм-аут) не прерывают его
+    if (err.code === 1) { toast('Доступ к геолокации запрещён — разрешите его в настройках', 4000); navigator.geolocation.clearWatch(geoWatch); geoWatch = null; }
+    else if (!S.me && !quiet) toast('Ищу спутники… местоположение появится, как только будет сигнал');
+  },
   { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
 }
 function updateSpeed() {
@@ -968,7 +972,7 @@ function bind() {
   try { if (localStorage.getItem('kostroma_side_hidden')) setSideHidden(true); } catch (e) {}
   $('zin').onclick = () => zoomBy(1.6); $('zout').onclick = () => zoomBy(1 / 1.6);
   $('zfit').onclick = () => { fitAll(); S.follow = false; draw(); };
-  $('locate').onclick = locate;
+  $('locate').onclick = () => locate(false);
   $('q').addEventListener('input', e => doSearch(e.target.value));
   $('q').addEventListener('keydown', e => { if (e.key !== 'Enter') return; e.preventDefault(); const q = e.target.value.trim(); if (!q) return;
     if (S.searchFirst) { S.searchFirst.go(); $('results').hidden = true; e.target.blur(); } else onlineSearch(q); });
@@ -1006,5 +1010,7 @@ function bind() {
 (function init() {
   bind(); resize(); fitAll(); useFallback(); updateRouteUI(); renderLightList();
   loadData(false);
+  locate(true);   // местоположение отслеживается сразу при запуске
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && geoWatch == null) locate(true); });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
