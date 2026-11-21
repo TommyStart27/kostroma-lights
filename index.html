@@ -45,6 +45,11 @@
   #ask{position:absolute;left:12px;right:12px;bottom:calc(16px + var(--safe-b));max-width:440px;margin:0 auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.18);z-index:8}
   #ask b{display:block;font-size:14px;margin-bottom:8px;font-weight:600}
   #ask .pinb{flex-wrap:wrap}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+  .chips[hidden],.row[hidden],#eAprHint[hidden]{display:none}
+  .chip{padding:5px 9px;font-size:12.5px;border-radius:16px;background:transparent;border:1px solid var(--line);color:var(--ink)}
+  .chip.has{border-color:var(--g)}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
   canvas{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
   .pinb{display:flex;gap:8px}
   .pinb button{padding:7px 12px}
@@ -184,6 +189,9 @@
       <div id="editor" hidden>
         <h2 id="eTitle"></h2>
         <div class="sub" id="eSub"></div>
+        <div class="sub" id="eAprHint" style="margin-top:6px">С какой стороны подъезжаете — у каждого направления свой сигнал:</div>
+        <div class="chips" id="eApr"></div>
+        <div class="chips" id="eMov"></div>
         <div class="row" id="mainRow"><label>Замеряю для улицы<select id="fMain"></select></label></div>
         <div class="mk">
           <button class="mkb g" data-mk="gs"><i></i><span>Начало зелёного<small>= конец красного</small></span></button>
@@ -226,8 +234,8 @@
   </aside>
 </div>
 <div id="msg"></div>
-<script src="data.js?v=13"></script>
-<script src="app.js?v=13"></script>
-<script src="camera.js?v=13"></script>
+<script src="data.js?v=14"></script>
+<script src="app.js?v=14"></script>
+<script src="camera.js?v=14"></script>
 </body>
 </html>

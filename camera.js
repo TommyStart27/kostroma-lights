@@ -136,15 +136,16 @@
     if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(tick); else requestAnimationFrame(tick);
   }
 
+  function title() { const L = S.lights[S.selected]; return '#' + (L.id + 1) + ' ' + (L.name || 'Светофор') + ' · ' + (typeof keyLabel === 'function' ? keyLabel(S.ek) : ''); }
   async function open() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('Камера недоступна в этом браузере'); return; }
-    const near = nearestLight();
-    if (near && near.id !== S.selected) { selectLight(near.id, true); toast('Выбран ближайший светофор: #' + (near.id + 1)); }
+    const det = typeof detectAhead === 'function' ? detectAhead() : null;
+    if (det && (det.L.id !== S.selected || det.key !== S.ek)) { selectLight(det.L.id, true, det.key); toast('Светофор впереди: #' + (det.L.id + 1) + (det.a ? ' ' + det.a.arrow + ' ' + det.a.from : '')); }
+    else if (!det) { const near = nearestLight(); if (near && near.id !== S.selected) { selectLight(near.id, true); toast('Выбран ближайший светофор: #' + (near.id + 1)); } }
     if (S.selected == null) { toast('Сначала выберите светофор на карте'); return; }
     if (!ov) build();
     ov.style.display = 'flex';
-    const L = S.lights[S.selected];
-    ov.querySelector('#camT').textContent = '#' + (L.id + 1) + ' ' + (L.name || 'Светофор') + ' · ' + ($('fMain').value || '');
+    ov.querySelector('#camT').textContent = title();
     events.length = 0; ov.querySelector('#camLog').innerHTML = '';
     roi = null; colorState = null; placeRoi(); setStatus(null, 'Коснитесь светофора на экране');
     try {
@@ -174,5 +175,6 @@
     b.onclick = open;
     anchor.insertAdjacentElement('afterend', b);
   }
-  window.gwCamera = { open, close, _classify: classify, _commit: commit };
+  function retarget(lbl) { if (!ov) return; ov.querySelector('#camT').textContent = title(); roi = null; colorState = null; run = { c: null, n: 0, t0: 0 }; placeRoi(); setStatus(null, 'Новый светофор: ' + lbl + ' — коснитесь его на экране'); logEv(Date.now(), 'остановка у ' + lbl); }
+  window.gwCamera = { open, close, retarget, isOpen: () => running, _classify: classify, _commit: commit };
 })();

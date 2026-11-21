@@ -30,7 +30,7 @@ const S = {
   graph: null,
   lights: LIGHTS_BASE.map((l, i) => ({ id: i, x: l[0], y: l[1], kind: l[2], n: l[3], name: l[4],
     streets: l[4] ? l[4].split(' / ') : [] })),
-  timings: {},
+  timings: {}, ek: '',
   view: { cx: 0, cy: 0, s: 0.07 },
   me: null, follow: false,
   route: null, pickMode: null, A: null, B: null,
@@ -272,23 +272,23 @@ function phase(T, now) {
   if (c < T.g + y) return { s: 'Y', left: T.g + y - c, cyc, c };
   return { s: 'R', left: cyc - c, cyc, c };
 }
-// ожидание при подъезде в момент tMs по улице streetName
-function waitAt(L, tMs, streetName) {
-  const T = S.timings[L.id];
-  const ph = phase(T, tMs);
+// ожидание у светофора L в момент tMs: bin — направление въезда, mov — манёвр (L/S/R), street — улица въезда
+function waitAt(L, tMs, bin, mov, street) {
+  const rec = recFor(L, bin, mov, street);
+  const ph = rec && phase(rec.T, tMs);
   if (!ph) return { wait: DEFAULT_WAIT[L.kind] || 12, known: false, s: null };
-  const main = (T.main || L.streets[0] || '');
-  const cross = L.kind === 'X' && streetName && main && streetName !== main;
-  if (!cross) {
+  const T = rec.T;
+  if (!rec.inv) {
     if (ph.s === 'G') return { wait: 0, known: true, s: 'G' };
     if (ph.s === 'Y') return { wait: ph.left + T.r, known: true, s: 'Y' };
     return { wait: ph.left, known: true, s: 'R' };
   }
-  // поперечное направление: зелёный, пока у главного красный
+  // поперечное направление: зелёный, пока у записанного красный
   if (ph.s === 'R') return { wait: 0, known: true, s: 'G' };
   if (ph.s === 'Y') return { wait: ph.left, known: true, s: 'R' };
   return { wait: ph.left + (T.y || 0), known: true, s: 'R' };
 }
+const turnOf = (bin, bout) => { const d = angD(bin, bout); return Math.abs(d) <= 35 ? 'S' : d > 0 && d < 150 ? 'R' : 'L'; };
 
 // ======================= МАРШРУТ ====================================
 class Heap { constructor() { this.a = []; } push(k, v) { const a = this.a; a.push([k, v]); let i = a.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (a[p][0] <= a[i][0]) break; [a[p], a[i]] = [a[i], a[p]]; i = p; } }
@@ -315,10 +315,11 @@ function route(fromXY, toXY_, mode, opt, departMs) {
       if (mode === 'car' ? e[2] <= 0 : !e[3]) continue;
       const vel = mode === 'car' ? e[2] / 3.6 : walkV;
       let dt = len / vel;
-      const cv = g.cl[v], cuL = g.cl[u];
-      if (cv >= 0 && cv !== cuL) {
-        const L = S.lights[cv];
-        if (mode === 'car' || L.kind !== 'X' || true) dt += waitAt(L, departMs + (tim[u] + len / vel) * 1000, e[4]).wait;
+      const cuL = g.cl[u];
+      if (cuL >= 0 && g.cl[v] !== cuL) {
+        let p = u, q = prev[u]; while (q >= 0 && g.cl[q] === cuL) { p = q; q = prev[q]; }
+        if (q >= 0) { const bin = bearXY(g.X[q], g.Y[q], g.X[p], g.Y[p]), bout = bearXY(g.X[u], g.Y[u], g.X[v], g.Y[v]);
+          dt += waitAt(S.lights[cuL], departMs + tim[u] * 1000, bin, turnOf(bin, bout), prevName[p]).wait; }
       }
       const nt = tim[u] + dt;
       const nc = opt === 'short' ? cu + len : nt;
@@ -332,18 +333,20 @@ function route(fromXY, toXY_, mode, opt, departMs) {
   const path = []; for (let v = t; v >= 0; v = prev[v]) path.push(v);
   path.reverse();
   // разбор по светофорам: заново проходим путь по времени
-  const lights = []; let tt = 0;
+  const lights = []; let tt = 0, ent = -1, entName = '';
   for (let i = 1; i < path.length; i++) {
     const u = path[i - 1], v = path[i];
     const e = g.adj[u].find(x => x[0] === v);
     const vel = mode === 'car' ? (e[2] || 30) / 3.6 : walkV;
-    tt += e[1] / vel;
-    const cv = g.cl[v];
-    if (cv >= 0 && cv !== g.cl[u]) {
-      const w = waitAt(S.lights[cv], departMs + tt * 1000, e[4]);
-      lights.push({ id: cv, eta: tt, ...w, street: e[4] });
+    const cuL = g.cl[u];
+    if (cuL >= 0 && g.cl[v] !== cuL && ent >= 1) {
+      const q = path[ent - 1], p = path[ent], bin = bearXY(g.X[q], g.Y[q], g.X[p], g.Y[p]), bout = bearXY(g.X[u], g.Y[u], g.X[v], g.Y[v]);
+      const mv = turnOf(bin, bout), w = waitAt(S.lights[cuL], departMs + tt * 1000, bin, mv, entName), a = nearApproach(S.lights[cuL], bin, 40);
+      lights.push({ id: cuL, eta: tt, ...w, street: entName, key: a ? `${cuL}|${a.k}` : String(cuL), mv });
       tt += w.wait;
     }
+    tt += e[1] / vel;
+    if (g.cl[v] >= 0 && g.cl[v] !== cuL) { ent = i; entName = e[4]; }
   }
   return { pts: path.map(i => [g.X[i], g.Y[i]]), time: tt, dist: dist[t], lights };
 }
@@ -416,8 +419,15 @@ function render() {
   const now = Date.now(), showNum = s > 0.2;
   for (const L of liveLights()) {
     const x = sx(L.x), y = sy(L.y); if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
-    const ph = phase(S.timings[L.id], now);
+    const ph = phase(anyRec(L), now);
     const r = (L.kind === 'X' ? 6.5 : 4.5) * Math.max(0.85, Math.min(1.7, k));
+    if (s > 0.45 && S.graph) for (const a of approaches(L)) {   // подъезды: треугольник со стороны, откуда едут машины, цвет — их сигнал
+      const ep = effPhase(recFor(L, a.b, '', a.name), now), rad = a.b * Math.PI / 180, ux = Math.sin(rad), uy = -Math.cos(rad), dd = r + 12;
+      const cx0 = x - ux * dd, cy0 = y - uy * dd, sel = L.id === S.selected && S.ek && S.ek.split('|')[1] === a.k, z = sel ? 8 : 6;
+      ctx.beginPath(); ctx.moveTo(cx0 + ux * z, cy0 + uy * z); ctx.lineTo(cx0 - ux * z * .7 - uy * z * .8, cy0 - uy * z * .7 + ux * z * .8); ctx.lineTo(cx0 - ux * z * .7 + uy * z * .8, cy0 - uy * z * .7 - ux * z * .8); ctx.closePath();
+      ctx.fillStyle = css(ep ? (ep.s === 'G' ? '--g' : ep.s === 'Y' ? '--y' : '--r') : '--none'); ctx.fill();
+      if (sel) { ctx.lineWidth = 1.5; ctx.strokeStyle = css('--accent'); ctx.stroke(); }
+    }
     if (L.id === S.selected) { ctx.beginPath(); ctx.arc(x, y, r + 6, 0, 7); ctx.fillStyle = css('--accent'); ctx.globalAlpha = .25; ctx.fill(); ctx.globalAlpha = 1; }
     ctx.beginPath(); ctx.arc(x, y, r, 0, 7);
     if (ph) { ctx.fillStyle = css(ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'); ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css('--panel'); ctx.stroke(); }
@@ -538,6 +548,7 @@ function locate(quiet) {
   geoWatch = navigator.geolocation.watchPosition(p => {
     const [x, y] = toXY(p.coords.latitude, p.coords.longitude);
     const first = !S.me; S.me = { x, y, acc: p.coords.accuracy, sp: p.coords.speed };
+    try { trackPush(x, y, p.coords.speed, p.timestamp || Date.now()); } catch (e) {}
     if (first || S.follow) { S.follow = true; S.view.cx = x; S.view.cy = y; if (first && S.view.s < 0.4) S.view.s = 0.6; }
     if (first && (Math.abs(x) > 20000 || Math.abs(y) > 20000)) toast('Вы далеко от Костромы — точка за пределами карты', 4000);
     if (first && p.coords.accuracy > 300) toast('Точность ' + Math.round(p.coords.accuracy) + ' м — на ПК местоположение примерное', 4000);
@@ -760,6 +771,138 @@ function tapBuilding(X, Y) {
   return false;
 }
 
+// ======================= НАПРАВЛЕНИЯ ПОДЪЕЗДА =======================
+// У перекрёстка несколько подъездов (обычно 4), у каждого свой сигнал, а иногда ещё и стрелки.
+// Ключ тайминга: "id" — весь перекрёсток (как раньше), "id|b180" — подъезд, "id|b180|L" — стрелка налево.
+const ARW = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
+const FROM = ['с юга', 'с юго-запада', 'с запада', 'с северо-запада', 'с севера', 'с северо-востока', 'с востока', 'с юго-востока'];
+const MOV = { '': 'Все сигналы', L: '← налево', S: '↑ прямо', R: '→ направо' };
+const angD = (a, b) => { let d = (b - a) % 360; if (d > 180) d -= 360; if (d < -180) d += 360; return d; };
+const bearXY = (x0, y0, x1, y1) => (Math.atan2(x1 - x0, y1 - y0) * 180 / Math.PI + 360) % 360;
+function approaches(L) {
+  const g = S.graph; if (!g || !L) return [];
+  if (L._ag === g && L._acl === g.cl) return L._ap;
+  const raw = [], k0 = Math.floor(L.x / g.G), k1 = Math.floor(L.y / g.G);
+  for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const v of g.grid.get((k0 + i) + ',' + (k1 + j)) || []) {
+    if (g.cl[v] !== L.id) continue;
+    for (const e of g.adj[v]) {
+      const u = e[0]; if (g.cl[u] === L.id) continue;
+      const back = g.adj[u].find(x => x[0] === v); if (!back || back[2] <= 0) continue;   // по этому отрезку можно въехать
+      raw.push([bearXY(g.X[u], g.Y[u], g.X[v], g.Y[v]), back[4] || '']);
+    }
+  }
+  raw.sort((a, b) => a[0] - b[0]);
+  const grp = [];
+  for (const [b, nm] of raw) {
+    let G = grp.find(q => Math.abs(angD(q.b, b)) < 35);
+    if (!G) grp.push(G = { b, n: 0, names: {} });
+    G.b = (G.b + angD(G.b, b) / (G.n + 1) + 360) % 360; G.n++; if (nm) G.names[nm] = (G.names[nm] || 0) + 1;
+  }
+  L._ap = grp.map(q => {
+    const name = Object.entries(q.names).sort((a, b) => b[1] - a[1]).map(e => e[0])[0] || '';
+    const k = 'b' + (Math.round(q.b / 5) * 5) % 360, o = Math.round(q.b / 45) % 8;
+    return { b: q.b, k, name, arrow: ARW[o], from: FROM[o] };
+  }).sort((a, b) => a.b - b.b);
+  L._ag = g; L._acl = g.cl;
+  return L._ap;
+}
+function nearApproach(L, b, tol) { let best = null, bd = tol; for (const a of approaches(L)) { const d = Math.abs(angD(a.b, b)); if (d < bd) { bd = d; best = a; } } return best; }
+const invS = s => s === 'R' ? 'G' : 'R';
+// какой тайминг действует для въезда с направлением bin и манёвра mov; inv — сигнал противоположный записанному
+function recFor(L, bin, mov, street) {
+  const T = S.timings, id = L.id;
+  if (bin != null) {
+    const a = nearApproach(L, bin, 40);
+    if (a) { if (mov && T[`${id}|${a.k}|${mov}`]) return { T: T[`${id}|${a.k}|${mov}`] }; if (T[`${id}|${a.k}`]) return { T: T[`${id}|${a.k}`] }; }
+    const o = nearApproach(L, bin + 180, 40); if (o && T[`${id}|${o.k}`]) return { T: T[`${id}|${o.k}`] };   // встречное направление — та же фаза
+    if (L.kind === 'X') for (const d of [90, -90]) { const p = nearApproach(L, bin + d, 40); if (p && T[`${id}|${p.k}`]) return { T: T[`${id}|${p.k}`], inv: true }; }
+  }
+  const t0 = T[id]; if (!t0) return null;
+  const main = t0.main || L.streets[0] || '';
+  return { T: t0, inv: L.kind === 'X' && !!street && !!main && street !== main };
+}
+// есть ли у светофора хоть какой-то тайминг — для цвета кружка на карте и в списке
+function anyRec(L) {
+  if (S.timings[L.id]) return S.timings[L.id];
+  const p = L.id + '|'; for (const k in S.timings) if (k.startsWith(p)) return S.timings[k];
+  return null;
+}
+function effPhase(rec, now) { if (!rec) return null; const ph = phase(rec.T, now); if (!ph) return null; return rec.inv ? { ...ph, s: invS(ph.s) } : ph; }
+function keyLabel(k) {
+  const [id, bk, mv] = String(k).split('|'); if (!bk) return 'весь перекрёсток';
+  const L = S.lights[+id], a = approaches(L).find(q => q.k === bk);
+  const o = a ? a : { arrow: ARW[Math.round(+bk.slice(1) / 45) % 8], from: FROM[Math.round(+bk.slice(1) / 45) % 8], name: '' };
+  return `${o.arrow} ${o.from}${o.name ? ' (' + o.name + ')' : ''}${mv ? ' · ' + MOV[mv] : ''}`;
+}
+function renderApr() {
+  const L = S.lights[S.selected], box = $('eApr'), mb = $('eMov'); if (!L || !box) return;
+  const ap = approaches(L), [, bk, mv] = S.ek.split('|');
+  box.innerHTML = ''; mb.innerHTML = '';
+  const chip = (txt, on, fn, has, title) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip' + (on ? ' on' : '') + (has ? ' has' : ''); b.textContent = txt; if (title) b.title = title; b.onclick = fn; return b; };
+  box.appendChild(chip('Весь перекрёсток', !bk, () => setEk(String(L.id)), !!S.timings[L.id], 'Один сигнал на всё — если не знаете направление'));
+  for (const a of ap) box.appendChild(chip(`${a.arrow} ${a.from}${a.name ? ' · ' + a.name : ''}`, bk === a.k, () => setEk(`${L.id}|${a.k}`), Object.keys(S.timings).some(k => k === `${L.id}|${a.k}` || k.startsWith(`${L.id}|${a.k}|`)), 'Едете ' + a.arrow + ', подъезжаете ' + a.from));
+  $('eAprHint').hidden = !ap.length;
+  mb.hidden = !bk;
+  if (bk) for (const m of ['', 'L', 'S', 'R']) mb.appendChild(chip(MOV[m], (mv || '') === m, () => setEk(`${L.id}|${bk}` + (m ? '|' + m : '')), !!S.timings[`${L.id}|${bk}` + (m ? '|' + m : '')], m ? 'Отдельная секция-стрелка со своим сигналом' : 'Основной сигнал этого подъезда'));
+}
+function setEk(k) { S.ek = k; loadFields(); }
+function loadFields() {
+  const L = S.lights[S.selected], T = S.timings[S.ek] || {};
+  $('fG').value = T.g ?? ''; $('fY').value = T.y ?? ''; $('fR').value = T.r ?? ''; $('fA').value = T.a != null ? fmtT(T.a) : '';
+  if (S.meas && S.meas.id !== S.ek) S.meas = null;
+  const sel = $('fMain'); sel.innerHTML = '';
+  const opts = L.streets.length ? L.streets : ['—'];
+  for (const s of opts) { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); }
+  sel.value = T.main || opts[0]; $('mainRow').hidden = L.kind !== 'X' || L.streets.length < 2 || S.ek.includes('|');
+  renderApr(); tickEditor(); draw();
+}
+// ---- что впереди: по пути за последние 25–150 м определяем, к какому светофору и с какой стороны подъехали
+function trackPush(x, y, sp, t) {
+  const tr = S.trk || (S.trk = []);
+  const last = tr[tr.length - 1];
+  if (last && t - last.t < 400) return;
+  if (sp == null && last) sp = Math.hypot(x - last.x, y - last.y) / Math.max(0.5, (t - last.t) / 1000);
+  tr.push({ x, y, t, sp: sp ?? 0 });
+  while (tr.length && t - tr[0].t > 120000) tr.shift();
+  checkStop();
+}
+function headingNow() {
+  const tr = S.trk; if (!tr || tr.length < 2) return null;
+  const c = tr[tr.length - 1];
+  for (let i = tr.length - 2; i >= 0; i--) { const d = Math.hypot(tr[i].x - c.x, tr[i].y - c.y); if (d >= 25) return d > 150 ? null : bearXY(tr[i].x, tr[i].y, c.x, c.y); }
+  return null;
+}
+function detectAhead() {
+  if (!S.me) return null;
+  const hd = headingNow(), c = S.me;
+  let best = null, bd = 80;
+  for (const L of liveLights()) {
+    const d = Math.hypot(L.x - c.x, L.y - c.y); if (d >= bd) continue;
+    if (hd != null && d > 14 && Math.abs(angD(hd, bearXY(c.x, c.y, L.x, L.y))) > 50) continue;   // светофор сбоку или позади
+    if (hd == null && d > 35) continue;
+    bd = d; best = L;
+  }
+  if (!best) return null;
+  const a = hd != null ? nearApproach(best, hd, 50) : null;
+  return { L: best, key: a ? `${best.id}|${a.k}` : String(best.id), a, d: bd };
+}
+function checkStop() {
+  const tr = S.trk, c = tr[tr.length - 1];
+  const st = S.stop || (S.stop = { since: 0, done: false, at: null });
+  if (st.at && Math.hypot(c.x - st.at[0], c.y - st.at[1]) > 30) { st.done = false; st.at = null; }   // уехали — следующая остановка новая
+  if (c.sp > 1) { st.since = 0; return; }
+  if (!st.since) st.since = c.t;
+  const wasMoving = tr.some(p => c.t - p.t < 90000 && p.sp > 4);
+  if (st.done || !wasMoving || c.t - st.since < 2500) return;
+  st.done = true; st.at = [c.x, c.y];
+  const det = detectAhead(); if (!det) return;
+  const lbl = '#' + (det.L.id + 1) + ' ' + (det.L.name || 'светофор') + (det.a ? ' · ' + det.a.arrow + ' ' + det.a.from : '');
+  if (window.gwCamera && gwCamera.isOpen()) { selectLight(det.L.id, false, det.key); gwCamera.retarget(lbl); return; }
+  ask('Стоите у ' + lbl + '?', [
+    ['📷 Замер камерой', () => { selectLight(det.L.id, true, det.key); showTab('lights'); window.gwCamera && gwCamera.open(true); }, true],
+    ['Открыть', () => { selectLight(det.L.id, true, det.key); showTab('lights'); }], ['✕', null]]);
+}
+
 // ======================= МОИ СВЕТОФОРЫ ==============================
 // Добавленные вручную светофоры и убранные лишние. Хранятся на устройстве и попадают в экспорт.
 const LS_MY = 'kostroma_mylights_v1';
@@ -803,10 +946,11 @@ function addLight(x, y, kind) {
 }
 function removeLight(i) {
   const L = S.lights[i]; if (!L) return;
-  delete S.timings[i]; saveTimings();
+  for (const k of Object.keys(S.timings)) if (parseInt(k) === i) delete S.timings[k];
+  saveTimings();
   if (L.mine) {
     // убираем добавленный: номера следующих моих светофоров сдвигаются, их тайминги переносим
-    const T = {}; for (const [k, v] of Object.entries(S.timings)) { const n = +k; if (n < i) T[n] = v; else if (n > i) T[n - 1] = v; }
+    const T = {}; for (const [k, v] of Object.entries(S.timings)) { const n = parseInt(k), rest = String(k).slice(String(n).length); if (n < i) T[k] = v; else if (n > i) T[(n - 1) + rest] = v; }
     S.timings = T; saveTimings();
     S.my.add = S.my.add.filter(a => a.id !== i);
   } else if (!S.my.del.includes(i)) S.my.del.push(i);
@@ -903,12 +1047,12 @@ function computeRoute() {
     html += '<div class="lst">';
     for (const l of r.lights) {
       const L = S.lights[l.id], col = l.s === 'G' ? '--g' : l.s === 'R' || l.s === 'Y' ? '--r' : '--none';
-      html += `<div class="li" data-l="${l.id}"><span class="dot on" style="background:var(${col})"></span><span class="nm">#${l.id + 1} ${escapeHtml(L.name || 'Светофор')}</span><span class="tm">${fmtT(depart + l.eta * 1000)}${l.wait > 0.5 ? ' · ждать ' + Math.round(l.wait) + ' с' : l.known ? ' · зелёный' : ''}</span></div>`;
+      html += `<div class="li" data-l="${l.id}" data-k="${l.key}"><span class="dot on" style="background:var(${col})"></span><span class="nm">#${l.id + 1} ${escapeHtml(L.name || 'Светофор')} <small style="color:var(--muted)">${{ L: '←', S: '↑', R: '→' }[l.mv] || ''}</small></span><span class="tm">${fmtT(depart + l.eta * 1000)}${l.wait > 0.5 ? ' · ждать ' + Math.round(l.wait) + ' с' : l.known ? ' · зелёный' : ''}</span></div>`;
     }
     html += '</div>';
   }
   out.innerHTML = html;
-  out.querySelectorAll('[data-l]').forEach(d => d.onclick = () => { selectLight(+d.dataset.l, true); showTab('lights'); });
+  out.querySelectorAll('[data-l]').forEach(d => d.onclick = () => { selectLight(+d.dataset.l, true, d.dataset.k); showTab('lights'); });
   draw();
 }
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -920,7 +1064,7 @@ function renderLightList() {
   for (const L of liveLights()) {
     const name = L.name || (L.kind === 'P' ? 'Пешеходный переход' : 'Без названия');
     if (q && !(String(L.id + 1) === q.replace('#', '') || name.toLowerCase().includes(q))) continue;
-    const ph = phase(S.timings[L.id], now);
+    const ph = phase(anyRec(L), now);
     const d = document.createElement('div'); d.className = 'li' + (L.id === S.selected ? ' sel' : ''); d.dataset.i = L.id;
     d.innerHTML = `<span class="num">#${L.id + 1}</span><span class="dot${ph ? ' on' : ''}"${ph ? ` style="background:var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})"` : ''}></span><span class="nm"></span><span class="tm">${ph ? Math.ceil(ph.left) + ' с' : ''}</span>`;
     d.querySelector('.nm').textContent = name + (L.kind === 'P' ? ' (пеш.)' : '');
@@ -933,27 +1077,23 @@ function parseClock(s) {
   const m = String(s).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/); if (!m) return null;
   const d = new Date(); d.setHours(+m[1], +m[2], +(m[3] || 0), 0); let t = d.getTime(); if (t > Date.now() + 60000) t -= 86400000; return t;
 }
-function selectLight(i, center) {
-  S.selected = i; const L = S.lights[i], T = S.timings[i] || {};
+function selectLight(i, center, key) {
+  const L = S.lights[i];
+  if (S.selected !== i || key) S.ek = key || String(i);
+  S.selected = i;
   if (center) { S.view.cx = L.x; S.view.cy = L.y; if (S.view.s < 0.35) S.view.s = 0.6; S.follow = false; }
   $('editor').hidden = false;
   $('eTitle').textContent = '#' + (i + 1) + '  ' + (L.name || (L.kind === 'P' ? 'Пешеходный переход' : 'Без названия'));
   $('eSub').textContent = (L.kind === 'X' ? 'Перекрёсток' : 'Пешеходный переход') + (L.mine ? ' · добавлен вами' : ' · точек в OSM: ' + L.n);
-  $('fG').value = T.g ?? ''; $('fY').value = T.y ?? ''; $('fR').value = T.r ?? ''; $('fA').value = T.a != null ? fmtT(T.a) : '';
-  if (S.meas && S.meas.id !== i) S.meas = null;
-  const sel = $('fMain'); sel.innerHTML = '';
-  const opts = L.streets.length ? L.streets : ['—'];
-  for (const s of opts) { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); }
-  sel.value = T.main || opts[0]; $('mainRow').hidden = L.kind !== 'X' || L.streets.length < 2;
-  renderLightList(); tickEditor(); draw();
+  loadFields(); renderLightList();
   const it = $('lightList').querySelector('[data-i="' + i + '"]'); if (it) it.scrollIntoView({ block: 'nearest' });
 }
 // ---- замер у светофора: кнопки «загорелся», цикл усредняется по нескольким кругам
 const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
 const r1 = v => Math.round(v * 10) / 10;
 function getMeas() {
-  let m = (S.meas && S.meas.id === S.selected) ? S.meas : null;
-  if (!m || !m.cyc) m = S.meas = { id: S.selected, cyc: [], gr: [], ye: [], re: [], man: {} };
+  let m = (S.meas && S.meas.id === S.ek) ? S.meas : null;
+  if (!m || !m.cyc) m = S.meas = { id: S.ek, cyc: [], gr: [], ye: [], re: [], man: {} };
   m.man = m.man || {};
   return m;
 }
@@ -1012,7 +1152,7 @@ function countdown(color) {
 }
 function updMeas() {
   const el = $('eMeas'); if (!el) return;
-  const m = S.meas, mine = m && m.id === S.selected && m.last;
+  const m = S.meas, mine = m && m.id === S.ek && m.last;
   document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(mine && m.last === b.dataset.mk)));
   if (!mine) { el.innerHTML = 'Жмите кнопку в момент смены сигнала. Подъехали на красный — нажмите «Конец красного», когда загорится зелёный, затем «Начало красного», затем снова «Начало зелёного». Есть табло с секундами — впишите число и нажмите цвет. Длительность можно вписать и вручную в поля ниже.'; return; }
   const now = Date.now();
@@ -1037,7 +1177,7 @@ function updMeas() {
 function tickEditor() {
   if (S.selected == null) return;
   updMeas();
-  const ph = phase(S.timings[S.selected], Date.now()), el = $('eLive');
+  const ph = phase(S.timings[S.ek], Date.now()), el = $('eLive');
   if (!ph) { el.textContent = 'Нет таймингов — заполните поля и сохраните.'; return; }
   const nm = { G: 'ЗЕЛЁНЫЙ', Y: 'ЖЁЛТЫЙ', R: 'КРАСНЫЙ' }[ph.s];
   el.innerHTML = `Сейчас: <b style="color:var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})">${nm}</b>, переключится через <b>${ph.left.toFixed(1)} с</b> · цикл ${ph.cyc} с`;
@@ -1046,16 +1186,16 @@ function saveTimings() { try { localStorage.setItem(LS_TIMINGS, JSON.stringify(S
 function saveLight(auto) {
   if (S.selected == null) return;
   let g = parseFloat($('fG').value), y = parseFloat($('fY').value || '0'), r = parseFloat($('fR').value), a = parseClock($('fA').value);
-  if (S.meas && S.meas.id === S.selected && S.meas.g && fmtT(S.meas.g) === $('fA').value.trim()) a = S.meas.g;
+  if (S.meas && S.meas.id === S.ek && S.meas.g && fmtT(S.meas.g) === $('fA').value.trim()) a = S.meas.g;
   if (!(g > 0) || isNaN(r) || r < 0) { toast('Укажите зелёный и красный в секундах'); return; }
   if (a == null) { toast('Отметьте начало зелёного кнопкой или впишите время ЧЧ:ММ:СС'); return; }
-  S.timings[S.selected] = { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
-  saveTimings(); renderLightList(); tickEditor(); draw(); toast(auto ? `Замер сохранён: зелёный ${g} с, жёлтый ${isNaN(y) ? 0 : y} с, красный ${r} с` : 'Сохранено на этом устройстве');
+  S.timings[S.ek] = S.ek.includes('|') ? { g, y: isNaN(y) ? 0 : y, r, a } : { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
+  saveTimings(); renderLightList(); renderApr(); tickEditor(); draw(); toast(auto ? `Замер сохранён: зелёный ${g} с, жёлтый ${isNaN(y) ? 0 : y} с, красный ${r} с` : 'Сохранено на этом устройстве');
   if (S.route) computeRoute();
 }
-function clearLight() { if (S.selected == null) return; delete S.timings[S.selected]; saveTimings(); selectLight(S.selected, false); if (S.route) computeRoute(); }
+function clearLight() { if (S.selected == null) return; delete S.timings[S.ek]; saveTimings(); loadFields(); renderLightList(); if (S.route) computeRoute(); }
 function exportTimings() {
-  const out = { app: 'kostroma-lights', v: 1, saved: new Date().toISOString(), my_lights: S.my.add.map(a => ({ id: a.id + 1, kind: a.kind, name: a.name, x: a.x, y: a.y, lat: +toLL(a.x, a.y)[0].toFixed(6), lon: +toLL(a.x, a.y)[1].toFixed(6) })), removed: S.my.del.map(i => i + 1), lights: Object.entries(S.timings).map(([k, T]) => ({ id: +k + 1, name: S.lights[k].name, x: Math.round(S.lights[k].x), y: Math.round(S.lights[k].y), green: T.g, yellow: T.y, red: T.r, green_at: fmtT(T.a), green_at_ms: T.a, main: T.main })) };
+  const out = { app: 'kostroma-lights', v: 1, saved: new Date().toISOString(), my_lights: S.my.add.map(a => ({ id: a.id + 1, kind: a.kind, name: a.name, x: a.x, y: a.y, lat: +toLL(a.x, a.y)[0].toFixed(6), lon: +toLL(a.x, a.y)[1].toFixed(6) })), removed: S.my.del.map(i => i + 1), lights: Object.entries(S.timings).filter(([k]) => S.lights[parseInt(k)]).map(([k, T]) => ({ id: parseInt(k) + 1, key: k, direction: keyLabel(k), name: S.lights[parseInt(k)].name, x: Math.round(S.lights[parseInt(k)].x), y: Math.round(S.lights[parseInt(k)].y), green: T.g, yellow: T.y, red: T.r, green_at: fmtT(T.a), green_at_ms: T.a, main: T.main })) };
   const blob = new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'светофоры-кострома.json'; document.body.appendChild(a); a.click(); a.remove();
   toast('Файл с таймингами сохранён');
@@ -1066,7 +1206,7 @@ function importTimings(file) {
     try {
       const j = JSON.parse(fr.result); let n = 0;
       if (j.my_lights || j.removed) { applyMy({ add: (j.my_lights || []).map(a => ({ id: a.id - 1, x: a.x, y: a.y, kind: a.kind === 'P' ? 'P' : 'X', name: a.name || '' })), del: (j.removed || []).map(i => i - 1) }); saveMy(); }
-      for (const l of j.lights || []) { const i = l.id - 1; if (!S.lights[i]) continue; S.timings[i] = { g: +l.green, y: +l.yellow || 0, r: +l.red, a: l.green_at_ms || parseClock(l.green_at), main: l.main }; n++; }
+      for (const l of j.lights || []) { const i = l.id - 1; if (!S.lights[i]) continue; S.timings[l.key && parseInt(l.key) === i ? l.key : i] = { g: +l.green, y: +l.yellow || 0, r: +l.red, a: l.green_at_ms || parseClock(l.green_at), main: l.main }; n++; }
       saveTimings(); renderLightList(); draw(); toast('Загружено таймингов: ' + n);
     } catch (e) { toast('Файл не похож на файл таймингов'); }
   };
@@ -1123,7 +1263,7 @@ function bind() {
   $('fileIn').onchange = e => { if (e.target.files[0]) importTimings(e.target.files[0]); e.target.value = ''; };
   $('reload').onclick = () => loadData(true);
   setInterval(() => { if (document.hidden) return; draw(); tickEditor(); if (!$('pane-lights').hidden && document.activeElement !== $('lq')) {
-    const now = Date.now(); $('lightList').querySelectorAll('.li').forEach(d => { const ph = phase(S.timings[d.dataset.i], now); if (ph) { const dot = d.querySelector('.dot'); dot.className = 'dot on'; dot.style.background = `var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})`; d.querySelector('.tm').textContent = Math.ceil(ph.left) + ' с'; } }); } }, 500);
+    const now = Date.now(); $('lightList').querySelectorAll('.li').forEach(d => { const ph = phase(anyRec(S.lights[d.dataset.i]), now); if (ph) { const dot = d.querySelector('.dot'); dot.className = 'dot on'; dot.style.background = `var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})`; d.querySelector('.tm').textContent = Math.ceil(ph.left) + ' с'; } }); } }, 500);
 }
 (function init() {
   loadMy(); renderMyInfo(); bind(); resize(); fitAll(); useFallback(); updateRouteUI(); renderLightList();
