@@ -645,9 +645,10 @@ function selectLight(i, center) {
 // ---- замер у светофора: кнопки «загорелся», цикл усредняется по нескольким кругам
 const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
 const r1 = v => Math.round(v * 10) / 10;
-function mark(k) {
+function mark(k, tEv) {
   if (S.selected == null) return;
-  const now = Date.now();
+  // время самого касания (а не обработки), если браузер его даёт
+  const now = (tEv && Math.abs(tEv - Date.now()) < 1500) ? tEv : Date.now();
   let m = (S.meas && S.meas.id === S.selected) ? S.meas : null;
   if (!m || !m.cyc) m = S.meas = { id: S.selected, cyc: [], gr: [], ye: [], re: [] };
   const fresh = (t, lim) => t != null && now - t < lim;
@@ -747,7 +748,10 @@ function bind() {
   document.querySelectorAll('[data-opt]').forEach(b => b.onclick = () => { S.opt = b.dataset.opt; updateRouteUI(); computeRoute(); });
   $('depart').onchange = e => { S.depart = +e.target.value; computeRoute(); };
   $('lq').addEventListener('input', renderLightList);
-  document.querySelectorAll('[data-mk]').forEach(b => b.onclick = () => mark(b.dataset.mk));
+  document.querySelectorAll('[data-mk]').forEach(b => {
+    b.addEventListener('pointerdown', e => { if (e.button > 0) return; e.preventDefault(); mark(b.dataset.mk, performance.timeOrigin + e.timeStamp); });
+    b.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); mark(b.dataset.mk); } });
+  });
   $('bReset').onclick = () => { S.meas = null; updMeas(); toast('Начат новый замер'); };
   $('bSave').onclick = () => saveLight(false); $('bClear').onclick = clearLight;
   $('bExport').onclick = exportTimings;
