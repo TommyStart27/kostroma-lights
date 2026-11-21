@@ -73,6 +73,19 @@
   .num{font-variant-numeric:tabular-nums;color:var(--muted);width:32px;flex:none;font-size:12px}
   .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tm{font-variant-numeric:tabular-nums;font-size:12px;color:var(--muted);white-space:nowrap}
+  .mk{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  .mkb{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:11px;font-weight:600;font-size:13px;line-height:1.15;text-align:left;border:1.5px solid;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+  .mkb i{width:14px;height:14px;border-radius:50%;flex:none}
+  .mkb.g{border-color:color-mix(in srgb,var(--g) 55%,transparent);background:color-mix(in srgb,var(--g) 10%,transparent)}
+  .mkb.g i{background:var(--g)}
+  .mkb.r{border-color:color-mix(in srgb,var(--r) 55%,transparent);background:color-mix(in srgb,var(--r) 10%,transparent)}
+  .mkb.r i{background:var(--r)}
+  .mkb:active{transform:scale(.96)}
+  .mkb.last{box-shadow:0 0 0 2px var(--accent)}
+  .vals{display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr;gap:6px;margin-top:10px}
+  .vals label{font-size:11.5px;color:var(--muted)}
+  .vals input{padding:6px 7px;font-size:14px}
+  .btns.sm button{padding:6px 10px;font-size:13px}
   #editor{border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
   .live{margin-top:10px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--ink) 5%,transparent);font-variant-numeric:tabular-nums}
   #msg{position:fixed;left:50%;bottom:calc(24px + var(--safe-b));transform:translateX(-50%);background:var(--ink);color:var(--land);padding:9px 14px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20;max-width:90vw;text-align:center}
@@ -137,20 +150,22 @@
       <div id="editor" hidden>
         <h2 id="eTitle"></h2>
         <div class="sub" id="eSub"></div>
-        <div class="row">
-          <label>Зелёный, с<input id="fG" type="number" min="0" step="0.5" inputmode="decimal"></label>
-          <label>Жёлтый, с<input id="fY" type="number" min="0" step="0.5" inputmode="decimal"></label>
-          <label>Красный, с<input id="fR" type="number" min="0" step="0.5" inputmode="decimal"></label>
+        <div class="row" id="mainRow"><label>Замеряю для улицы<select id="fMain"></select></label></div>
+        <div class="mk">
+          <button class="mkb g" data-mk="gs"><i></i><span>Начало<br>зелёного</span></button>
+          <button class="mkb g" data-mk="ge"><i></i><span>Конец<br>зелёного</span></button>
+          <button class="mkb r" data-mk="rs"><i></i><span>Начало<br>красного</span></button>
+          <button class="mkb r" data-mk="re"><i></i><span>Конец<br>красного</span></button>
         </div>
-        <div class="row" id="mainRow"><label>Тайминг указан для улицы<select id="fMain"></select></label></div>
-        <div class="row"><label>Зелёный загорелся в (ЧЧ:ММ:СС)<input id="fA" type="text" placeholder="18:31:07" inputmode="numeric"></label></div>
-        <div class="btns">
-          <button id="bNow">Зелёный — сейчас</button>
-          <button id="bSave" class="primary">Сохранить</button>
-          <button id="bClear">Очистить</button>
+        <div class="live" id="eMeas"></div>
+        <div class="vals">
+          <label>Зел., с<input id="fG" type="number" min="0" step="0.1" inputmode="decimal"></label>
+          <label>Жёл., с<input id="fY" type="number" min="0" step="0.1" inputmode="decimal"></label>
+          <label>Кр., с<input id="fR" type="number" min="0" step="0.1" inputmode="decimal"></label>
+          <label>Зелёный в<input id="fA" type="text" placeholder="18:31:07" inputmode="numeric"></label>
         </div>
+        <div class="btns sm"><button id="bSave" class="primary">Сохранить</button><button id="bReset">Новый замер</button><button id="bClear">Удалить</button></div>
         <div class="live" id="eLive"></div>
-        <div class="hint">Стоя у светофора, нажмите «Зелёный — сейчас» в момент включения зелёного. Для перекрёстка выберите улицу, на которую смотрите: для поперечной улицы фазы считаются наоборот.</div>
       </div>
       <input id="lq" type="search" placeholder="Поиск по улице или номеру">
       <div class="lst" id="lightList"></div>

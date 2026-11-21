@@ -634,6 +634,7 @@ function selectLight(i, center) {
   $('eTitle').textContent = '#' + (i + 1) + '  ' + (L.name || (L.kind === 'P' ? 'Пешеходный переход' : 'Без названия'));
   $('eSub').textContent = (L.kind === 'X' ? 'Перекрёсток' : 'Пешеходный переход') + ' · точек в OSM: ' + L.n;
   $('fG').value = T.g ?? ''; $('fY').value = T.y ?? ''; $('fR').value = T.r ?? ''; $('fA').value = T.a != null ? fmtT(T.a) : '';
+  if (!S.meas || S.meas.id !== i) S.meas = { id: i };
   const sel = $('fMain'); sel.innerHTML = '';
   const opts = L.streets.length ? L.streets : ['—'];
   for (const s of opts) { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); }
@@ -641,21 +642,60 @@ function selectLight(i, center) {
   renderLightList(); tickEditor(); draw();
   const it = $('lightList').querySelector('[data-i="' + i + '"]'); if (it) it.scrollIntoView({ block: 'nearest' });
 }
+// ---- замер у светофора: 4 кнопки, длительности считаются сами
+function mark(k) {
+  if (S.selected == null) return;
+  const now = Date.now();
+  const m = (S.meas && S.meas.id === S.selected) ? S.meas : (S.meas = { id: S.selected });
+  const sec = ms => Math.round(ms / 100) / 10;
+  const fresh = (t, lim) => t != null && now - t < lim;
+  if (k === 'gs') {
+    if (fresh(m.rs, 300000)) $('fR').value = sec(now - m.rs);
+    m.gs = now; m.ge = null; m.rs = null; $('fA').value = fmtT(now);
+  } else if (k === 'ge') {
+    if (fresh(m.gs, 300000)) $('fG').value = sec(now - m.gs);
+    m.ge = now;
+  } else if (k === 'rs') {
+    if (fresh(m.ge, 15000)) $('fY').value = sec(now - m.ge);
+    else if (m.ge == null && fresh(m.gs, 300000)) { $('fG').value = sec(now - m.gs); $('fY').value = 0; }
+    m.rs = now;
+  } else if (k === 're') {
+    if (fresh(m.rs, 300000)) $('fR').value = sec(now - m.rs);
+    m.gs = now; m.ge = null; m.rs = null; $('fA').value = fmtT(now);
+  }
+  m.last = k; m.t = now;
+  try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
+  const g = parseFloat($('fG').value), r = parseFloat($('fR').value);
+  if (g > 0 && r > 0 && $('fA').value) saveLight(true);
+  updMeas();
+}
+function updMeas() {
+  const el = $('eMeas'); if (!el) return;
+  const m = S.meas;
+  document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(m && m.id === S.selected && m.last === b.dataset.mk)));
+  if (!m || m.id !== S.selected || !m.last) { el.textContent = 'Стоя у светофора, нажимайте кнопку в момент смены сигнала — секунды посчитаются сами. Хватит одного полного круга: начало зелёного → конец зелёного → начало красного → конец красного.'; return; }
+  const s = ((Date.now() - m.t) / 1000).toFixed(1);
+  const what = { gs: 'идёт зелёный', ge: 'горит жёлтый', rs: 'идёт красный', re: 'снова зелёный' }[m.last];
+  const next = { gs: 'Конец зелёного', ge: 'Начало красного', rs: 'Конец красного', re: 'Конец зелёного' }[m.last];
+  el.innerHTML = `⏱ ${what}: <b>${s} с</b> · дальше «${next}»`;
+}
 function tickEditor() {
   if (S.selected == null) return;
+  updMeas();
   const ph = phase(S.timings[S.selected], Date.now()), el = $('eLive');
   if (!ph) { el.textContent = 'Нет таймингов — заполните поля и сохраните.'; return; }
   const nm = { G: 'ЗЕЛЁНЫЙ', Y: 'ЖЁЛТЫЙ', R: 'КРАСНЫЙ' }[ph.s];
   el.innerHTML = `Сейчас: <b style="color:var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})">${nm}</b>, переключится через <b>${ph.left.toFixed(1)} с</b> · цикл ${ph.cyc} с`;
 }
 function saveTimings() { try { localStorage.setItem(LS_TIMINGS, JSON.stringify(S.timings)); } catch (e) { toast('Не удалось сохранить на устройстве'); } }
-function saveLight() {
+function saveLight(auto) {
   if (S.selected == null) return;
-  const g = parseFloat($('fG').value), y = parseFloat($('fY').value || '0'), r = parseFloat($('fR').value), a = parseClock($('fA').value);
+  let g = parseFloat($('fG').value), y = parseFloat($('fY').value || '0'), r = parseFloat($('fR').value), a = parseClock($('fA').value);
+  if (S.meas && S.meas.id === S.selected && S.meas.gs && fmtT(S.meas.gs) === $('fA').value.trim()) a = S.meas.gs;
   if (!(g > 0) || isNaN(r) || r < 0) { toast('Укажите зелёный и красный в секундах'); return; }
-  if (a == null) { toast('Укажите время включения зелёного: ЧЧ:ММ:СС или кнопкой «Зелёный — сейчас»'); return; }
+  if (a == null) { toast('Отметьте начало зелёного кнопкой или впишите время ЧЧ:ММ:СС'); return; }
   S.timings[S.selected] = { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
-  saveTimings(); renderLightList(); tickEditor(); draw(); toast('Сохранено на этом устройстве');
+  saveTimings(); renderLightList(); tickEditor(); draw(); toast(auto ? `Замер сохранён: зелёный ${g} с, жёлтый ${isNaN(y) ? 0 : y} с, красный ${r} с` : 'Сохранено на этом устройстве');
   if (S.route) computeRoute();
 }
 function clearLight() { if (S.selected == null) return; delete S.timings[S.selected]; saveTimings(); selectLight(S.selected, false); if (S.route) computeRoute(); }
@@ -695,8 +735,9 @@ function bind() {
   document.querySelectorAll('[data-opt]').forEach(b => b.onclick = () => { S.opt = b.dataset.opt; updateRouteUI(); computeRoute(); });
   $('depart').onchange = e => { S.depart = +e.target.value; computeRoute(); };
   $('lq').addEventListener('input', renderLightList);
-  $('bNow').onclick = () => { $('fA').value = fmtT(Date.now()); toast('Время отмечено — нажмите «Сохранить»'); };
-  $('bSave').onclick = saveLight; $('bClear').onclick = clearLight;
+  document.querySelectorAll('[data-mk]').forEach(b => b.onclick = () => mark(b.dataset.mk));
+  $('bReset').onclick = () => { S.meas = { id: S.selected }; updMeas(); toast('Начат новый замер'); };
+  $('bSave').onclick = () => saveLight(false); $('bClear').onclick = clearLight;
   $('bExport').onclick = exportTimings;
   $('bImport').onclick = () => $('fileIn').click();
   $('fileIn').onchange = e => { if (e.target.files[0]) importTimings(e.target.files[0]); e.target.value = ''; };
