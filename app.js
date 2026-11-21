@@ -161,7 +161,7 @@ async function loadData(force) {
   const progress = t => { $('loading').hidden = false; $('loadingText').textContent = t; };
   if (!force) {
     const cached = await kvGet('osm');
-    if (cached && cached.v === DATA_VERSION) { useData(cached); return; }
+    if (cached && cached.v === DATA_VERSION) { useData(cached); loadBuildings(false); return; }
   }
   progress('Загрузка карты Костромы…');
   let d = await loadFromOverpass(progress);
@@ -170,6 +170,7 @@ async function loadData(force) {
   if (!d) { toast('Не удалось загрузить карту из интернета — показаны только основные улицы', 5000); useFallback(); return; }
   await kvSet('osm', d);
   useData(d);
+  loadBuildings(true);
   toast('Карта загружена и сохранена на устройстве');
 }
 
@@ -382,6 +383,7 @@ function render() {
   }
   ctx.strokeStyle = css('--water');
   for (const r of S.rivers) { ctx.lineWidth = r.big ? Math.max(2, 120 * s) : Math.max(1, 8 * s); ctx.beginPath(); pathPts(r.pts); ctx.stroke(); }
+  drawBuildings(s);
   // дороги
   const k = Math.max(0.35, Math.min(3, s / 0.12));
   const W_ = { 1: [10, 7], 2: [8.5, 5.5], 3: [7, 4.5], 4: [5, 3], 5: [3.2, 1.8], 6: [0, 1.2] };
@@ -423,6 +425,7 @@ function render() {
       if (ph && s > 0.4) { ctx.font = '11px system-ui,sans-serif'; ctx.strokeText(Math.ceil(ph.left) + ' с', x + r + 4, y + 13); ctx.fillStyle = css('--muted'); ctx.fillText(Math.ceil(ph.left) + ' с', x + r + 4, y + 13); }
     }
   }
+  drawPin();
   // точки A/B
   for (const [P, lab, col] of [[S.A, 'A', '--g'], [S.B, 'B', '--r']]) {
     if (!P) continue; const x = sx(P[0]), y = sy(P[1]);
@@ -507,12 +510,13 @@ function zoomBy(f) { S.view.s = Math.max(0.02, Math.min(4, S.view.s * f)); draw(
 function onTap(px, py) {
   if (S.pickMode) {
     const p = [wx(px), wy(py)];
-    S[S.pickMode] = p; S.pickMode = null; $('mapwrap').classList.remove('picking');
+    S[S.pickMode] = p; S[S.pickMode + 'name'] = null; S.pickMode = null; $('mapwrap').classList.remove('picking');
     updateRouteUI(); computeRoute(); return;
   }
   let best = null, bd = 1e9;
   for (const L of S.lights) { const d = Math.hypot(sx(L.x) - px, sy(L.y) - py); if (d < bd) { bd = d; best = L; } }
-  if (best && bd < 20) { selectLight(best.id, false); showTab('lights'); }
+  if (best && bd < 20) { selectLight(best.id, false); showTab('lights'); return; }
+  if (!tapBuilding(wx(px), wy(py)) && S.pin) hidePin();
 }
 
 // ======================= ГЕОЛОКАЦИЯ =================================
@@ -529,6 +533,7 @@ function locate() {
     if (first && (Math.abs(x) > 20000 || Math.abs(y) > 20000)) toast('Вы далеко от Костромы — точка за пределами карты', 4000);
     if (first && p.coords.accuracy > 300) toast('Точность ' + Math.round(p.coords.accuracy) + ' м — на ПК местоположение примерное', 4000);
     draw(); updateSpeed();
+    if (S.wantMeA && !S.A) { S.wantMeA = false; S.A = [x, y]; S.meRef = S.A; S.Aname = null; updateRouteUI(); computeRoute(); }
   }, err => { toast(err.code === 1 ? 'Доступ к геолокации запрещён — разрешите его в настройках браузера' : 'Не удалось определить местоположение'); geoWatch = null; },
   { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
 }
@@ -549,14 +554,177 @@ function doSearch(q) {
   const box = $('results'); box.innerHTML = '';
   q = q.trim().toLowerCase(); if (!q) { box.hidden = true; return; }
   const out = [];
+  const nAddr = addrSearch(q, out);
   const num = q.replace(/^#/, '');
   if (/^\d+$/.test(num) && S.lights[+num - 1]) out.push({ t: 'Светофор #' + num, sub: S.lights[+num - 1].name, go: () => { selectLight(+num - 1, true); showTab('lights'); } });
   for (const st of streetIndex) if (st.name.toLowerCase().includes(q)) { out.push({ t: st.name, sub: 'улица', go: () => { S.view.cx = (st.x0 + st.x1) / 2; S.view.cy = (st.y0 + st.y1) / 2; S.view.s = Math.min(1.2, Math.max(0.12, Math.min(W / (st.x1 - st.x0 + 300), H / (st.y1 - st.y0 + 300)))); S.follow = false; draw(); } }); if (out.length > 12) break; }
   for (const L of S.lights) if (L.name.toLowerCase().includes(q) && out.length < 20) out.push({ t: 'Светофор #' + (L.id + 1), sub: L.name, go: () => { selectLight(L.id, true); showTab('lights'); } });
-  if (!out.length) out.push({ t: 'Ничего не найдено', sub: S.data ? '' : 'Подробная карта ещё не загружена', go: null });
+  if (!out.length) out.push({ t: 'Не найдено в скачанной карте', sub: S.bld ? 'Попробуйте онлайн-поиск ниже' : 'Дома ещё не загружены — попробуйте онлайн-поиск', go: null });
+  out.push({ t: '🔎 Искать онлайн', sub: '«' + q + '» — адреса, организации, остановки', go: () => onlineSearch(q), keep: true });
   for (const o of out) { const d = document.createElement('div'); d.className = 'res'; d.innerHTML = '<b></b><span></span>'; d.querySelector('b').textContent = o.t; d.querySelector('span').textContent = o.sub;
-    if (o.go) d.onclick = () => { o.go(); box.hidden = true; $('q').blur(); }; box.appendChild(d); }
+    if (o.go) d.onclick = () => { o.go(); if (!o.keep) { box.hidden = true; $('q').blur(); } }; box.appendChild(d); }
+  S.searchFirst = nAddr ? out[0] : null;
   box.hidden = false;
+}
+
+// ======================= ДОМА И АДРЕСА ==============================
+// Здания и номера домов из OpenStreetMap (кэш на устройстве) + онлайн-поиск через Nominatim
+const BLD_VERSION = 1;
+async function loadBuildings(force) {
+  if (!force) {
+    const c = await kvGet('bld');
+    if (c && c.v === BLD_VERSION) { useBuildings(c); return; }
+  }
+  const b = BBOX.join(',');
+  const q = `[out:json][timeout:180];(way["building"](${b});node["addr:housenumber"](${b}););out tags geom qt;`;
+  const body = 'data=' + encodeURIComponent(q);
+  for (const url of OVERPASS) {
+    try {
+      $('bldInfo').textContent = 'Дома: загрузка…';
+      const r = await fetchTimeout(url, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, 200000);
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (!j.elements || j.elements.length < 1000) continue;
+      const p = [], a = [];
+      for (const e of j.elements) {
+        const t = e.tags || {};
+        const st = t['addr:street'] || t['addr:place'] || '', hn = t['addr:housenumber'] || '';
+        if (e.type === 'way' && e.geometry && e.geometry.length > 2) {
+          const flat = [];
+          for (const g of e.geometry) { const xy = toXY(g.lat, g.lon); flat.push(Math.round(xy[0]), Math.round(xy[1])); }
+          p.push(flat);
+          if (hn) { let cx = 0, cy = 0; const n = flat.length / 2; for (let i = 0; i < flat.length; i += 2) { cx += flat[i]; cy += flat[i + 1]; } a.push([Math.round(cx / n), Math.round(cy / n), st, hn, t.name || '', p.length - 1]); }
+        } else if (e.type === 'node' && hn) {
+          const xy = toXY(e.lat, e.lon); a.push([Math.round(xy[0]), Math.round(xy[1]), st, hn, t.name || '', -1]);
+        }
+      }
+      const d = { v: BLD_VERSION, p, a, at: Date.now() };
+      await kvSet('bld', d);
+      useBuildings(d);
+      return;
+    } catch (e) { /* следующий сервер */ }
+  }
+  $('bldInfo').textContent = 'Дома: не удалось загрузить (поиск адресов работает онлайн).';
+}
+function useBuildings(d) {
+  const bb = d.p.map(f => { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (let i = 0; i < f.length; i += 2) { if (f[i] < x0) x0 = f[i]; if (f[i] > x1) x1 = f[i]; if (f[i + 1] < y0) y0 = f[i + 1]; if (f[i + 1] > y1) y1 = f[i + 1]; } return [x0, y0, x1, y1]; });
+  const hnOf = new Array(d.p.length).fill(null);
+  for (const a of d.a) if (a[5] >= 0) hnOf[a[5]] = a;
+  S.bld = { p: d.p, bb, a: d.a, hnOf };
+  $('bldInfo').textContent = `Дома: ${d.p.length} зданий, ${d.a.length} адресов.`;
+  draw();
+}
+function drawBuildings(s) {
+  const B = S.bld; if (!B || s < 0.22) return;
+  const x0 = wx(-20), x1 = wx(W + 20), y1 = wy(-20), y0 = wy(H + 20);
+  ctx.beginPath();
+  const vis = [];
+  for (let i = 0; i < B.p.length; i++) {
+    const b = B.bb[i]; if (b[2] < x0 || b[0] > x1 || b[3] < y0 || b[1] > y1) continue;
+    const f = B.p[i]; ctx.moveTo(sx(f[0]), sy(f[1]));
+    for (let j = 2; j < f.length; j += 2) ctx.lineTo(sx(f[j]), sy(f[j + 1]));
+    ctx.closePath(); vis.push(i);
+  }
+  ctx.fillStyle = css('--bld'); ctx.fill();
+  if (s > 0.6) { ctx.strokeStyle = css('--bldEdge'); ctx.lineWidth = 0.8; ctx.stroke(); }
+  if (s > 1.3 && vis.length < 700) {
+    ctx.font = '10px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = css('--muted');
+    for (const i of vis) { const a = B.hnOf[i]; if (a) ctx.fillText(a[3], sx(a[0]), sy(a[1])); }
+    ctx.textAlign = 'start';
+  }
+}
+const normSt = s => String(s).toLowerCase().replace(/ё/g, 'е')
+  .replace(/\b(улица|ул|проспект|пр-т|пр|переулок|пер|шоссе|ш|площадь|пл|бульвар|б-р|набережная|наб|проезд|пр-д|тупик|микрорайон|мкр)\b\.?/g, ' ')
+  .replace(/[«»"().,]/g, ' ').replace(/\s+/g, ' ').trim();
+const normHn = s => String(s).toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, '').replace(/корпус|корп\.?|к\.?/g, 'к').replace(/строение|стр\.?/g, 'с');
+function addrLabel(a) { return (a[2] ? a[2] + ', ' : '') + a[3] + (a[4] ? ' · ' + a[4] : ''); }
+function addrSearch(q, out) {
+  const B = S.bld; if (!B) return 0;
+  const m = q.match(/^(.*?)[\s,]+(\d+\s*[а-яa-z]?(?:\s*(?:к|корп|корпус|стр|с)\.?\s*\d+)?(?:\/\d+[а-я]?)?)$/i);
+  let n = 0;
+  if (m) {
+    const st = normSt(m[1]), hn = normHn(m[2]);
+    if (!st) return 0;
+    const res = [];
+    for (const a of B.a) {
+      if (!a[2] || !normSt(a[2]).includes(st)) continue;
+      const h = normHn(a[3]);
+      if (h === hn) res.push([0, a]); else if (h.startsWith(hn)) res.push([1, a]);
+    }
+    res.sort((x, y) => x[0] - y[0] || x[1][3].localeCompare(y[1][3], 'ru', { numeric: true }));
+    for (const [, a] of res.slice(0, 8)) { out.push({ t: addrLabel(a), sub: 'дом', go: () => showPin(a[0], a[1], addrLabel(a)) }); n++; }
+  } else if (q.length >= 3) {
+    const qq = q.toLowerCase();
+    for (const a of B.a) if (a[4] && a[4].toLowerCase().includes(qq)) { out.push({ t: a[4], sub: (a[2] ? a[2] + ', ' : '') + a[3], go: () => showPin(a[0], a[1], addrLabel(a)) }); if (++n >= 6) break; }
+  }
+  return n;
+}
+let lastOnline = 0;
+async function onlineSearch(q) {
+  const box = $('results'); box.hidden = false;
+  if (!navigator.onLine) { box.innerHTML = '<div class="res"><b>Нет интернета</b><span>Онлайн-поиск недоступен, работает поиск по скачанным домам</span></div>'; return; }
+  const wait = 1100 - (Date.now() - lastOnline); if (wait > 0) await new Promise(r => setTimeout(r, wait));   // правило Nominatim: не чаще 1 запроса в секунду
+  lastOnline = Date.now();
+  box.innerHTML = '<div class="res"><b>Ищу онлайн…</b></div>';
+  try {
+    const qs = /кострома/i.test(q) ? q : q + ', Кострома';
+    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&accept-language=ru&countrycodes=ru&bounded=1&viewbox=40.78,57.85,41.13,57.69&q=' + encodeURIComponent(qs);
+    const r = await fetchTimeout(url, { headers: { Accept: 'application/json' } }, 15000);
+    const j = await r.json();
+    box.innerHTML = '';
+    if (!j.length) { box.innerHTML = '<div class="res"><b>Онлайн ничего не найдено</b><span>Попробуйте иначе: «Советская 97», «ТЦ Солнечный»</span></div>'; return; }
+    for (const it of j) {
+      const parts = it.display_name.split(', ');
+      const title = it.name || parts.slice(0, 2).join(', ');
+      const sub = parts.slice(it.name ? 1 : 2, 4).join(', ');
+      const [x, y] = toXY(+it.lat, +it.lon);
+      const d = document.createElement('div'); d.className = 'res'; d.innerHTML = '<b></b><span></span>';
+      d.querySelector('b').textContent = title; d.querySelector('span').textContent = sub + ' · онлайн';
+      d.onclick = () => { showPin(x, y, title); box.hidden = true; $('q').blur(); };
+      box.appendChild(d);
+    }
+  } catch (e) { box.innerHTML = '<div class="res"><b>Онлайн-поиск не ответил</b><span>Проверьте интернет и попробуйте ещё раз</span></div>'; }
+}
+function showPin(x, y, label) {
+  S.pin = { x, y, label };
+  S.view.cx = x; S.view.cy = y; if (S.view.s < 0.6) S.view.s = 0.9; S.follow = false;
+  $('pinName').textContent = label; $('pin').hidden = false;
+  if (window.innerWidth < 760) document.body.classList.remove('sheet-open');
+  draw();
+}
+function hidePin() { S.pin = null; $('pin').hidden = true; draw(); }
+function pinTo(which) {
+  const P = S.pin; if (!P) return;
+  if (which === 'B') {
+    S.B = [P.x, P.y]; S.Bname = P.label;
+    if (!S.A && S.me) { S.A = [S.me.x, S.me.y]; S.meRef = S.A; S.Aname = null; }
+    if (!S.A) { S.wantMeA = true; locate(); toast('Точка B задана. Определяю ваше местоположение для точки A…'); }
+  } else { S.A = [P.x, P.y]; S.Aname = P.label; }
+  hidePin(); updateRouteUI(); computeRoute(); showTab('route');
+}
+function drawPin() {
+  const P = S.pin; if (!P) return;
+  const x = sx(P.x), y = sy(P.y);
+  ctx.beginPath(); ctx.arc(x, y - 16, 9, 0, 7); ctx.fillStyle = css('--accent'); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x - 6, y - 10); ctx.lineTo(x, y); ctx.lineTo(x + 6, y - 10); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y - 16, 3.5, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
+}
+function tapBuilding(X, Y) {
+  const B = S.bld; if (!B || S.view.s < 0.3) return false;
+  for (let i = 0; i < B.p.length; i++) {
+    const b = B.bb[i]; if (X < b[0] || X > b[2] || Y < b[1] || Y > b[3]) continue;
+    const f = B.p[i]; let inside = false;
+    for (let j = 0, k = f.length - 2; j < f.length; k = j, j += 2) {
+      const xi = f[j], yi = f[j + 1], xk = f[k], yk = f[k + 1];
+      if ((yi > Y) !== (yk > Y) && X < (xk - xi) * (Y - yi) / (yk - yi) + xi) inside = !inside;
+    }
+    if (!inside) continue;
+    let a = B.hnOf[i];
+    if (!a) { let bd = 900; for (const c of B.a) { const d = (c[0] - X) ** 2 + (c[1] - Y) ** 2; if (d < bd) { bd = d; a = c; } } }
+    showPin((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, a ? addrLabel(a) : 'Здание без адреса');
+    return true;
+  }
+  return false;
 }
 
 // ======================= UI: ВКЛАДКИ ================================
@@ -569,8 +737,8 @@ function showTab(name) {
 
 // ======================= UI: МАРШРУТ ================================
 function updateRouteUI() {
-  const nm = P => !P ? 'не выбрано' : (S.me && P === S.meRef ? 'моё местоположение' : toLL(P[0], P[1]).map(v => v.toFixed(5)).join(', '));
-  $('aVal').textContent = nm(S.A); $('bVal').textContent = nm(S.B);
+  const nm = (P, n) => !P ? 'не выбрано' : (S.me && P === S.meRef ? 'моё местоположение' : n || toLL(P[0], P[1]).map(v => v.toFixed(5)).join(', '));
+  $('aVal').textContent = nm(S.A, S.Aname); $('bVal').textContent = nm(S.B, S.Bname);
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === S.mode));
   document.querySelectorAll('[data-opt]').forEach(b => b.classList.toggle('on', b.dataset.opt === S.opt));
 }
@@ -773,12 +941,15 @@ function bind() {
   $('zfit').onclick = () => { fitAll(); S.follow = false; draw(); };
   $('locate').onclick = locate;
   $('q').addEventListener('input', e => doSearch(e.target.value));
+  $('q').addEventListener('keydown', e => { if (e.key !== 'Enter') return; e.preventDefault(); const q = e.target.value.trim(); if (!q) return;
+    if (S.searchFirst) { S.searchFirst.go(); $('results').hidden = true; e.target.blur(); } else onlineSearch(q); });
+  $('pinTo').onclick = () => pinTo('B'); $('pinFrom').onclick = () => pinTo('A'); $('pinX').onclick = hidePin;
   $('q').addEventListener('focus', e => doSearch(e.target.value));
   document.addEventListener('pointerdown', e => { if (!e.target.closest('.searchbox')) $('results').hidden = true; });
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => { if (b.classList.contains('on') && document.body.classList.contains('sheet-open') && window.innerWidth < 760) document.body.classList.remove('sheet-open'); else showTab(b.dataset.tab); });
   $('pickA').onclick = () => pick('A'); $('pickB').onclick = () => pick('B');
-  $('meA').onclick = () => { if (!S.me) { locate(); toast('Сначала дождитесь определения местоположения'); return; } S.A = [S.me.x, S.me.y]; S.meRef = S.A; updateRouteUI(); computeRoute(); };
-  $('swap').onclick = () => { [S.A, S.B] = [S.B, S.A]; updateRouteUI(); computeRoute(); };
+  $('meA').onclick = () => { if (!S.me) { locate(); toast('Сначала дождитесь определения местоположения'); return; } S.A = [S.me.x, S.me.y]; S.meRef = S.A; S.Aname = null; updateRouteUI(); computeRoute(); };
+  $('swap').onclick = () => { [S.A, S.B] = [S.B, S.A]; [S.Aname, S.Bname] = [S.Bname, S.Aname]; updateRouteUI(); computeRoute(); };
   $('clearRoute').onclick = () => { S.A = S.B = S.route = null; updateRouteUI(); computeRoute(); };
   document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { S.mode = b.dataset.mode; updateRouteUI(); computeRoute(); });
   document.querySelectorAll('[data-opt]').forEach(b => b.onclick = () => { S.opt = b.dataset.opt; updateRouteUI(); computeRoute(); });

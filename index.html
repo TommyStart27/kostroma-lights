@@ -17,14 +17,14 @@
   :root{
     --land:#f2efe9; --panel:#ffffff; --ink:#1d1d1b; --muted:#6b6a64; --line:#e3e1da;
     --water:#a9cde8; --r1:#f3b44a; --r2:#f8d48b; --r3:#ffffff; --r4:#ffffff; --path:#b9a98e; --case:#d2ccc0;
-    --route:#2f6df6; --routecase:#ffffff;
+    --route:#2f6df6; --routecase:#ffffff; --bld:#ddd6cb; --bldEdge:#c9c0b2;
     --g:#1f9d55; --y:#e0a100; --r:#d64032; --none:#9a978f; --accent:#2f5bd3;
     --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
   }
   @media (prefers-color-scheme: dark){
     :root{ --land:#1e2023; --panel:#26282c; --ink:#ecebe7; --muted:#a3a19a; --line:#3a3c40;
       --water:#253b52; --r1:#a77a2c; --r2:#7d6a45; --r3:#4b4d52; --r4:#3c3e43; --path:#5b554b; --case:#17181a;
-      --route:#6c9bff; --routecase:#1e2023; --none:#77756f; --accent:#7c9cff; }
+      --route:#6c9bff; --routecase:#1e2023; --none:#77756f; --accent:#7c9cff; --bld:#2c2e32; --bldEdge:#3a3c41; }
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html,body{margin:0;height:100%;background:var(--land);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
@@ -40,6 +40,11 @@
   .res span{color:var(--muted);font-size:12.5px}
   .ctrl{position:absolute;right:12px;top:calc(12px + var(--safe-t));display:flex;flex-direction:column;gap:8px;z-index:4}
   .ctrl button{width:42px;height:42px;padding:0;border-radius:12px;background:var(--panel);font-size:20px;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+  #pin{position:absolute;left:12px;right:12px;bottom:calc(16px + var(--safe-b));max-width:420px;margin:0 auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.18);z-index:7}
+  #pin b{display:block;font-size:14.5px;margin-bottom:8px}
+  .pinb{display:flex;gap:8px}
+  .pinb button{padding:7px 12px}
+  .pinb #pinX{margin-left:auto}
   #speed{position:absolute;left:12px;bottom:40px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 12px;font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
   #side{width:380px;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
   .tabs{display:flex;border-bottom:1px solid var(--line)}
@@ -113,6 +118,7 @@
     .tabs{padding-bottom:var(--safe-b)}
     body.sheet-open .tabs{padding-bottom:0}
     #speed{bottom:calc(64px + var(--safe-b))}
+    #pin{bottom:calc(62px + var(--safe-b))}
     .attr{bottom:calc(52px + var(--safe-b))}
   }
 </style>
@@ -130,6 +136,7 @@
     </div>
     <div id="loading" hidden><div class="spin"></div><span id="loadingText">Загрузка…</span></div>
     <div id="speed" hidden></div>
+    <div id="pin" hidden><b id="pinName"></b><div class="pinb"><button id="pinTo" class="primary">Маршрут сюда</button><button id="pinFrom">Отсюда</button><button id="pinX" aria-label="Закрыть">✕</button></div></div>
     <div class="attr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
   </div>
 
@@ -184,6 +191,7 @@
     <div class="pane" id="pane-data" hidden>
       <h2>Карта</h2>
       <div class="sub" id="dataInfo"></div>
+      <div class="sub" id="bldInfo">Дома: ещё не загружены.</div>
       <div class="btns"><button id="reload">Обновить карту из OpenStreetMap</button></div>
       <h2 style="margin-top:18px">Тайминги светофоров</h2>
       <div class="sub">Хранятся на этом устройстве. Чтобы перенести их на другое устройство или в Blender, сохраните файл и откройте его там.</div>
@@ -195,7 +203,8 @@
   </aside>
 </div>
 <div id="msg"></div>
-<script src="data.js?v=7"></script>
-<script src="app.js?v=7"></script>
+<script src="data.js?v=8"></script>
+<script src="app.js?v=8"></script>
+<script src="camera.js?v=8"></script>
 </body>
 </html>
