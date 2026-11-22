@@ -870,8 +870,12 @@ function trackPush(x, y, sp, t) {
   const tr = S.trk || (S.trk = []);
   const last = tr[tr.length - 1];
   if (last && t - last.t < 400) return;
-  if (sp == null && last) sp = Math.hypot(x - last.x, y - last.y) / Math.max(0.5, (t - last.t) / 1000);
-  tr.push({ x, y, t, sp: sp ?? 0 });
+  if (sp == null || !(sp >= 0)) {   // iPhone отдаёт -1, когда скорость неизвестна — считаем по пути за последние 3 с
+    let ref = null; for (let i = tr.length - 1; i >= 0; i--) if (t - tr[i].t >= 3000) { ref = tr[i]; break; }
+    ref = ref || tr[0];
+    sp = ref ? Math.hypot(x - ref.x, y - ref.y) / Math.max(1, (t - ref.t) / 1000) : 0;
+  }
+  tr.push({ x, y, t, sp });
   while (tr.length && t - tr[0].t > 120000) tr.shift();
   checkStop();
   if (window.gwAuto && gwAuto.on) gwAuto.onTrack(tr[tr.length - 1]);
@@ -905,7 +909,9 @@ function checkStop() {
   const wasMoving = tr.some(p => c.t - p.t < 90000 && p.sp > 4);
   if (st.done || !wasMoving || c.t - st.since < 2500) return;
   st.done = true; st.at = [c.x, c.y];
-  const det = detectAhead(); if (!det) return;
+  const det = detectAhead();
+  if (window.gwAuto && gwAuto.on && !det) { gwAuto.onStop(null); return; }
+  if (!det) return;
   const lbl = '#' + (det.L.id + 1) + ' ' + (det.L.name || 'светофор') + (det.a ? ' · ' + det.a.arrow + ' ' + det.a.from : '');
   if (window.gwAuto && gwAuto.on) { selectLight(det.L.id, false, det.key); gwAuto.onStop(det, lbl); return; }
   if (window.gwCamera && gwCamera.isOpen()) { selectLight(det.L.id, false, det.key); gwCamera.retarget(lbl); return; }
