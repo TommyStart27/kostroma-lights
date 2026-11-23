@@ -45,6 +45,9 @@
   #ask{position:absolute;left:12px;right:12px;bottom:calc(16px + var(--safe-b));max-width:440px;margin:0 auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.18);z-index:8}
   #ask b{display:block;font-size:14px;margin-bottom:8px;font-weight:600}
   #ask .pinb{flex-wrap:wrap}
+  .seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:2px 0 4px}
+  .seg button{flex:1;border:0;border-radius:0;padding:7px 0;background:transparent;color:var(--ink);font-weight:600}
+  .seg button.on{background:var(--accent);color:#fff}
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
   .chips[hidden],.row[hidden],#eAprHint[hidden]{display:none}
   .chip{padding:5px 9px;font-size:12.5px;border-radius:16px;background:transparent;border:1px solid var(--line);color:var(--ink)}
@@ -184,11 +187,14 @@
     </div>
 
     <div class="pane" id="pane-lights" hidden>
+      <div class="seg" id="tmode"><button data-m="mine" type="button">Мои</button><button data-m="shared" type="button">Общие</button></div>
+      <div class="sub" id="tmodeHint"></div>
       <div class="sub" id="lCount"></div>
       <div class="btns sm"><button id="bHere">📍 Я у светофора — добавить</button></div>
       <div id="editor" hidden>
         <h2 id="eTitle"></h2>
         <div class="sub" id="eSub"></div>
+        <div class="sub" id="eSrc" style="margin-top:4px;color:var(--accent)"></div>
         <div class="sub" id="eAprHint" style="margin-top:6px">С какой стороны подъезжаете — у каждого направления свой сигнал:</div>
         <div class="chips" id="eApr"></div>
         <div class="chips" id="eMov"></div>
@@ -221,8 +227,18 @@
       <div class="sub" id="bldInfo">Дома: ещё не загружены.</div>
       <div class="btns"><button id="reload">Обновить карту из OpenStreetMap</button></div>
       <h2 style="margin-top:18px">Тайминги светофоров</h2>
-      <div class="sub">Хранятся на этом устройстве. Чтобы перенести их на другое устройство или в Blender, сохраните файл и откройте его там.</div>
+      <div class="sub">«Мои» хранятся на этом устройстве. Чтобы перенести их на другое устройство или в Blender, сохраните файл и откройте его там.</div>
       <div class="btns"><button id="bExport">Сохранить в файл</button><button id="bImport">Загрузить из файла</button></div>
+      <h2 style="margin-top:18px">Общая база</h2>
+      <div class="sub">Ваши замеры хранятся у вас («Мои») и анонимно отправляются в общую базу — так ими пользуются все. Отправляются только номер светофора, направление и длительности фаз: без маршрутов, координат и имени. Чужие замеры никогда не меняют ваши.</div>
+      <div class="sub" id="shareInfo"></div>
+      <label class="sub" style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" id="shareOn" checked> Отправлять мои замеры в общую базу</label>
+      <div class="btns"><button id="shareSync">Обновить общие данные</button></div>
+      <details style="margin-top:8px"><summary class="sub" style="cursor:pointer">Ключ автора</summary>
+        <div class="sub">Только для автора приложения: с ключом его замеры в общей базе становятся главными.</div>
+        <div class="btns"><input id="ownerKey" type="password" autocomplete="off" placeholder="XXXX-XXXX-XXXX-XXXX" style="flex:1;min-width:0;padding:7px 9px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink)"><button id="ownerSave">Сохранить</button></div>
+        <div class="sub" id="ownerInfo"></div>
+      </details>
       <h2 style="margin-top:18px">Мои светофоры</h2>
       <div class="sub">Долгое нажатие на карте — добавить светофор или убрать лишний. Правки хранятся на устройстве и сохраняются в файл вместе с таймингами.</div>
       <div class="sub" id="myInfo"></div>
@@ -234,9 +250,9 @@
   </aside>
 </div>
 <div id="msg"></div>
-<script src="data.js?v=16"></script>
-<script src="app.js?v=16"></script>
-<script src="camera.js?v=16"></script>
-<script src="auto.js?v=16"></script>
+<script src="data.js?v=17"></script>
+<script src="app.js?v=17"></script>
+<script src="camera.js?v=17"></script>
+<script src="auto.js?v=17"></script>
 </body>
 </html>

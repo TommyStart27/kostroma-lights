@@ -37,7 +37,10 @@ const S = {
   mode: 'car', opt: 'fast', depart: 0,
   selected: null,
 };
-try { S.timings = JSON.parse(localStorage.getItem(LS_TIMINGS) || '{}') || {}; } catch (e) { S.timings = {}; }
+try { S.mine = JSON.parse(localStorage.getItem(LS_TIMINGS) || '{}') || {}; } catch (e) { S.mine = {}; }
+try { const sh = JSON.parse(localStorage.getItem('kostroma_shared_v1') || '{}'); S.shared = sh.t || {}; S.sharedAt = sh.at || 0; } catch (e) { S.shared = {}; }
+try { S.tmode = localStorage.getItem('kostroma_tmode') === 'shared' ? 'shared' : 'mine'; } catch (e) { S.tmode = 'mine'; }
+S.timings = makeTimingsProxy();   // чтение: «Мои» или «Общие»; запись — всегда в «Мои» (и отправка в общую базу)
 
 // ======================= УТИЛИТЫ ====================================
 const $ = id => document.getElementById(id);
@@ -846,6 +849,7 @@ function keyLabel(k) {
 function renderApr() {
   const L = S.lights[S.selected], box = $('eApr'), mb = $('eMov'); if (!L || !box) return;
   const ap = approaches(L), [, bk, mv] = S.ek.split('|');
+  $('eSrc').textContent = srcLabel(S.ek);
   box.innerHTML = ''; mb.innerHTML = '';
   const chip = (txt, on, fn, has, title) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip' + (on ? ' on' : '') + (has ? ' has' : ''); b.textContent = txt; if (title) b.title = title; b.onclick = fn; return b; };
   box.appendChild(chip('Весь перекрёсток', !bk, () => setEk(String(L.id)), !!S.timings[L.id], 'Один сигнал на всё — если не знаете направление'));
@@ -967,8 +971,8 @@ function removeLight(i) {
   saveTimings();
   if (L.mine) {
     // убираем добавленный: номера следующих моих светофоров сдвигаются, их тайминги переносим
-    const T = {}; for (const [k, v] of Object.entries(S.timings)) { const n = parseInt(k), rest = String(k).slice(String(n).length); if (n < i) T[k] = v; else if (n > i) T[(n - 1) + rest] = v; }
-    S.timings = T; saveTimings();
+    const T = {}; for (const [k, v] of Object.entries(S.mine)) { const n = parseInt(k), rest = String(k).slice(String(n).length); if (n < i) T[k] = v; else if (n > i) T[(n - 1) + rest] = v; }
+    S.mine = T; saveTimings();
     S.my.add = S.my.add.filter(a => a.id !== i);
   } else if (!S.my.del.includes(i)) S.my.del.push(i);
   applyMy(S.my);
@@ -1199,7 +1203,7 @@ function tickEditor() {
   const nm = { G: 'ЗЕЛЁНЫЙ', Y: 'ЖЁЛТЫЙ', R: 'КРАСНЫЙ' }[ph.s];
   el.innerHTML = `Сейчас: <b style="color:var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})">${nm}</b>, переключится через <b>${ph.left.toFixed(1)} с</b> · цикл ${ph.cyc} с`;
 }
-function saveTimings() { try { localStorage.setItem(LS_TIMINGS, JSON.stringify(S.timings)); } catch (e) { toast('Не удалось сохранить на устройстве'); } }
+function saveTimings() { try { localStorage.setItem(LS_TIMINGS, JSON.stringify(S.mine)); } catch (e) { toast('Не удалось сохранить на устройстве'); } }
 function saveLight(auto) {
   if (S.selected == null) return;
   let g = parseFloat($('fG').value), y = parseFloat($('fY').value || '0'), r = parseFloat($('fR').value), a = parseClock($('fA').value);
@@ -1207,12 +1211,12 @@ function saveLight(auto) {
   if (!(g > 0) || isNaN(r) || r < 0) { toast('Укажите зелёный и красный в секундах'); return; }
   if (a == null) { toast('Отметьте начало зелёного кнопкой или впишите время ЧЧ:ММ:СС'); return; }
   S.timings[S.ek] = S.ek.includes('|') ? { g, y: isNaN(y) ? 0 : y, r, a } : { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
-  saveTimings(); renderLightList(); renderApr(); tickEditor(); draw(); toast(auto ? `Замер сохранён: зелёный ${g} с, жёлтый ${isNaN(y) ? 0 : y} с, красный ${r} с` : 'Сохранено на этом устройстве');
+  saveTimings(); renderLightList(); renderApr(); tickEditor(); draw(); toast(auto ? `Замер сохранён: зелёный ${g} с, жёлтый ${isNaN(y) ? 0 : y} с, красный ${r} с` : (lsGet('kostroma_share_off', '') ? 'Сохранено в «Мои»' : 'Сохранено в «Мои» и отправлено в общую базу'));
   if (S.route) computeRoute();
 }
 function clearLight() { if (S.selected == null) return; delete S.timings[S.ek]; saveTimings(); loadFields(); renderLightList(); if (S.route) computeRoute(); }
 function exportTimings() {
-  const out = { app: 'kostroma-lights', v: 1, saved: new Date().toISOString(), my_lights: S.my.add.map(a => ({ id: a.id + 1, kind: a.kind, name: a.name, x: a.x, y: a.y, lat: +toLL(a.x, a.y)[0].toFixed(6), lon: +toLL(a.x, a.y)[1].toFixed(6) })), removed: S.my.del.map(i => i + 1), lights: Object.entries(S.timings).filter(([k]) => S.lights[parseInt(k)]).map(([k, T]) => ({ id: parseInt(k) + 1, key: k, direction: keyLabel(k), name: S.lights[parseInt(k)].name, x: Math.round(S.lights[parseInt(k)].x), y: Math.round(S.lights[parseInt(k)].y), green: T.g, yellow: T.y, red: T.r, green_at: fmtT(T.a), green_at_ms: T.a, main: T.main })) };
+  const out = { app: 'kostroma-lights', v: 1, saved: new Date().toISOString(), my_lights: S.my.add.map(a => ({ id: a.id + 1, kind: a.kind, name: a.name, x: a.x, y: a.y, lat: +toLL(a.x, a.y)[0].toFixed(6), lon: +toLL(a.x, a.y)[1].toFixed(6) })), removed: S.my.del.map(i => i + 1), lights: Object.entries(S.mine).filter(([k]) => S.lights[parseInt(k)]).map(([k, T]) => ({ id: parseInt(k) + 1, key: k, direction: keyLabel(k), name: S.lights[parseInt(k)].name, x: Math.round(S.lights[parseInt(k)].x), y: Math.round(S.lights[parseInt(k)].y), green: T.g, yellow: T.y, red: T.r, green_at: fmtT(T.a), green_at_ms: T.a, main: T.main })) };
   const blob = new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'светофоры-кострома.json'; document.body.appendChild(a); a.click(); a.remove();
   toast('Файл с таймингами сохранён');
@@ -1228,6 +1232,126 @@ function importTimings(file) {
     } catch (e) { toast('Файл не похож на файл таймингов'); }
   };
   fr.readAsText(file);
+}
+
+// ======================= ОБЩАЯ БАЗА =================================
+// Две версии таймингов: «Мои» — только на этом устройстве, меняет их только владелец телефона;
+// «Общие» — замеры всех пользователей. Свои правки отправляются в общую базу, а общая база мои не меняет.
+// Записи автора (с ключом автора) в общей базе главные: чужой замер их длительности не перебивает.
+const SUPA_URL = 'https://tvafpyewubnsvxzfmbdi.supabase.co', SUPA_KEY = 'sb_publishable_oXzPF1MbyTopYVt72vBc5g_mE_SNI4f';
+const LS_SHARED = 'kostroma_shared_v1', LS_SHQ = 'kostroma_shareq_v1';
+const KEY_RE = /^\d{1,4}(\|b\d{1,3}(\|[LSR])?)?$/;
+function lsGet(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } }
+function lsSet(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} }
+function makeTimingsProxy() {
+  const get = k => typeof k !== 'string' ? undefined : S.tmode === 'shared' ? S.shared[k] : (S.mine[k] ?? S.shared[k]);
+  return new Proxy({}, {
+    get: (_, k) => get(k),
+    set: (_, k, v) => { const prev = S.mine[k]; S.mine[k] = v && typeof v === 'object' ? { ...v } : v; shareQueue(k, S.mine[k], prev); return true; },
+    deleteProperty: (_, k) => { delete S.mine[k]; return true; },
+    has: (_, k) => get(k) !== undefined,
+    ownKeys: () => S.tmode === 'shared' ? Object.keys(S.shared) : [...new Set([...Object.keys(S.mine), ...Object.keys(S.shared)])],
+    getOwnPropertyDescriptor: (_, k) => { const v = get(k); return v === undefined ? undefined : { value: v, enumerable: true, configurable: true, writable: true }; }
+  });
+}
+const supaH = () => ({ apikey: SUPA_KEY, 'Content-Type': 'application/json' });
+function devId() { let d = lsGet('kostroma_dev', ''); if (!d) { d = 'd' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36).slice(-4); lsSet('kostroma_dev', d); } return d; }
+const ownerKey = () => lsGet('kostroma_owner', '');
+let shareQ = {}; try { shareQ = JSON.parse(lsGet(LS_SHQ, '{}')) || {}; } catch (e) { shareQ = {}; }
+let shareTimer = 0;
+function shareQueue(k, v, prev) {
+  if (lsGet('kostroma_share_off', '') || !KEY_RE.test(k) || parseInt(k) >= LIGHTS_BASE.length) return;   // свои добавленные светофоры пока только локально
+  if (!v || !(v.g > 0) || !(v.r > 0) || v.a == null) return;
+  const sync = prev && prev.g === v.g && prev.r === v.r && (prev.y || 0) === (v.y || 0);
+  shareQ[k] = { key: k, g: +(+v.g).toFixed(2), y: +(+(v.y || 0)).toFixed(2), r: +(+v.r).toFixed(2), a: Math.round(v.a), src: sync ? 'sync' : 'manual' };
+  lsSet(LS_SHQ, JSON.stringify(shareQ));
+  clearTimeout(shareTimer); shareTimer = setTimeout(shareFlush, 4000);
+}
+async function shareFlush() {
+  clearTimeout(shareTimer);
+  const items = Object.values(shareQ); if (!items.length || !navigator.onLine) return;
+  const sec = ownerKey(); let sent = 0, failed = false;
+  for (const it of items) {
+    const cyc = (it.g + it.y + it.r) * 1000; let a = it.a;
+    if (cyc > 0 && Date.now() - a > cyc) a += Math.floor((Date.now() - a) / cyc) * cyc;   // точку отсчёта переносим к текущему циклу
+    try {
+      const r = sec
+        ? await fetch(SUPA_URL + '/rest/v1/rpc/owner_submit', { method: 'POST', headers: supaH(), body: JSON.stringify({ secret: sec, p_key: it.key, p_g: it.g, p_y: it.y, p_r: it.r, p_a: a, p_src: it.src, p_device: devId() }) })
+        : await fetch(SUPA_URL + '/rest/v1/timings', { method: 'POST', headers: { ...supaH(), Prefer: 'return=minimal' }, body: JSON.stringify({ key: it.key, g: it.g, y: it.y, r: it.r, a, src: it.src, device: devId() }) });
+      if (r.ok) { delete shareQ[it.key]; sent++; sharedLocal({ ...it, a }, !!sec); }
+      else if (r.status === 429 || r.status >= 500) { failed = true; break; }
+      else {   // запись отклонена (неверные данные или ключ автора) — повторять бесполезно
+        delete shareQ[it.key];
+        if (sec && /not owner/.test(await r.text())) { lsSet('kostroma_owner', null); toast('Ключ автора не подошёл — замеры отправлены как обычные', 4000); renderShareInfo(); }
+      }
+    } catch (e) { failed = true; break; }
+  }
+  lsSet(LS_SHQ, JSON.stringify(shareQ));
+  if (failed || Object.keys(shareQ).length) shareTimer = setTimeout(shareFlush, 60000);
+  if (sent) renderShareInfo();
+}
+// свой отправленный замер сразу виден в общей версии, не дожидаясь обновления
+function sharedLocal(it, owner) {
+  const p = S.shared[it.key], rec = { g: it.g, y: it.y, r: it.r, a: it.a, owner, n: Math.max(1, p ? p.n : 1), at: Date.now() };
+  if (!p || owner || !p.owner) S.shared[it.key] = rec;
+  else if (Math.abs((p.g + p.y + p.r) - (it.g + it.y + it.r)) <= Math.max(2, 0.04 * (p.g + p.y + p.r))) p.a = it.a;   // у автора те же длительности — обновляем только точку отсчёта
+  lsSet(LS_SHARED, JSON.stringify({ t: S.shared, at: S.sharedAt || 0 }));
+}
+function aggregateShared(rows) {
+  const by = {}, out = {};
+  for (const x of rows) if (KEY_RE.test(x.key) && parseInt(x.key) < LIGHTS_BASE.length) (by[x.key] = by[x.key] || []).push(x);   // строки — от новых к старым
+  for (const [k, list] of Object.entries(by)) {
+    const own = list.filter(x => x.owner), base = own[0] || list[0], cyc = base.g + base.y + base.r;
+    const same = list.filter(x => Math.abs((x.g + x.y + x.r) - cyc) <= Math.max(2, cyc * 0.04));
+    out[k] = { g: base.g, y: base.y, r: base.r, a: same[0].a, owner: own.length > 0, n: new Set(same.map(x => x.device)).size, at: Date.parse(list[0].created_at) };
+  }
+  return out;
+}
+async function shareLoad(manual) {
+  if (!navigator.onLine) { if (manual) toast('Нет интернета — показываю сохранённую копию общей базы'); return; }
+  try {
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    const r = await fetch(`${SUPA_URL}/rest/v1/timings?select=key,g,y,r,a,owner,device,created_at&created_at=gte.${since}&order=created_at.desc&limit=10000`, { headers: supaH() });
+    if (!r.ok) throw new Error(r.status);
+    S.shared = aggregateShared(await r.json()); S.sharedAt = Date.now();
+    lsSet(LS_SHARED, JSON.stringify({ t: S.shared, at: S.sharedAt }));
+    renderLightList(); renderShareInfo(); if (S.selected != null) loadFields(); else draw();
+    if (S.route) computeRoute();
+    if (manual) toast('Общая база обновлена: светофоров с данными — ' + Object.keys(S.shared).length);
+  } catch (e) { if (manual) toast('Общая база сейчас недоступна — работаю с сохранённой копией'); }
+}
+function setTmode(m) {
+  S.tmode = m; lsSet('kostroma_tmode', m);
+  document.querySelectorAll('#tmode button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  $('tmodeHint').textContent = m === 'shared' ? 'Общие: замеры всех пользователей. Ваши правки тоже попадают сюда.' : 'Мои: ваши замеры; где вы не мерили — общие данные.';
+  renderLightList(); if (S.selected != null) loadFields(); else draw();
+  if (S.route) computeRoute();
+}
+function ago(ms) { const s = (Date.now() - ms) / 1000; return s < 90 ? 'только что' : s < 5400 ? Math.round(s / 60) + ' мин назад' : s < 129600 ? Math.round(s / 3600) + ' ч назад' : Math.round(s / 86400) + ' дн назад'; }
+function srcLabel(k) {
+  const m = S.mine[k], sh = S.shared[k];
+  const shTxt = sh ? `общая база: ${sh.owner ? 'данные автора ✓, ' : ''}подтверждений ${sh.n}, обновлено ${ago(sh.at)}` : '';
+  if (S.tmode === 'shared') return sh ? 'Показаны общие данные — ' + shTxt : 'В общей базе этого направления пока нет — ваш замер будет первым';
+  if (m) return 'Ваш замер' + (sh ? ' · ' + shTxt : '');
+  return sh ? 'Вы ещё не мерили — показаны общие данные (' + shTxt.replace('общая база: ', '') + ')' : '';
+}
+function renderShareInfo() {
+  const el = $('shareInfo'); if (!el) return;
+  const q = Object.keys(shareQ).length, sec = ownerKey();
+  el.textContent = `В общей базе: ${Object.keys(S.shared).length} направлений` + (S.sharedAt ? `, обновлено ${ago(S.sharedAt)}` : '') + (q ? ` · ждут отправки: ${q}` : '');
+  $('ownerInfo').textContent = sec ? 'Вы автор: ваши замеры в общей базе главные, чужие их не перебивают.' : 'Ключ не введён — ваши замеры уходят в общую базу как обычные.';
+  $('shareOn').checked = !lsGet('kostroma_share_off', '');
+}
+async function saveOwnerKey() {
+  const v = $('ownerKey').value.trim().toUpperCase();
+  if (!v) { lsSet('kostroma_owner', null); renderShareInfo(); toast('Ключ автора удалён с этого устройства'); return; }
+  try {
+    const r = await fetch(SUPA_URL + '/rest/v1/rpc/owner_check', { method: 'POST', headers: supaH(), body: JSON.stringify({ secret: v }) });
+    if (r.ok && (await r.json()) === true) {
+      lsSet('kostroma_owner', v); $('ownerKey').value = ''; renderShareInfo(); toast('Ключ принят: вы автор');
+      for (const [k, t] of Object.entries(S.mine)) shareQueue(k, t, null);   // переотправляем свои замеры уже как автор
+    } else toast('Ключ не подошёл');
+  } catch (e) { toast('Нет связи с общей базой — попробуйте позже'); }
 }
 
 // ======================= ИНИЦИАЛИЗАЦИЯ ==============================
@@ -1276,6 +1400,10 @@ function bind() {
   });
   $('bSave').onclick = () => saveLight(false); $('bClear').onclick = clearLight;
   $('bExport').onclick = exportTimings;
+  document.querySelectorAll('#tmode button').forEach(b => b.onclick = () => setTmode(b.dataset.m));
+  $('shareSync').onclick = () => { shareFlush(); shareLoad(true); };
+  $('ownerSave').onclick = saveOwnerKey;
+  $('shareOn').onchange = e => { lsSet('kostroma_share_off', e.target.checked ? null : '1'); renderShareInfo(); };
   $('bImport').onclick = () => $('fileIn').click();
   $('fileIn').onchange = e => { if (e.target.files[0]) importTimings(e.target.files[0]); e.target.value = ''; };
   $('reload').onclick = () => loadData(true);
@@ -1283,7 +1411,11 @@ function bind() {
     const now = Date.now(); $('lightList').querySelectorAll('.li').forEach(d => { const ph = phase(anyRec(S.lights[d.dataset.i]), now); if (ph) { const dot = d.querySelector('.dot'); dot.className = 'dot on'; dot.style.background = `var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})`; d.querySelector('.tm').textContent = Math.ceil(ph.left) + ' с'; } }); } }, 500);
 }
 (function init() {
-  loadMy(); renderMyInfo(); bind(); resize(); fitAll(); useFallback(); updateRouteUI(); renderLightList();
+  loadMy(); renderMyInfo(); bind(); setTmode(S.tmode); renderShareInfo(); resize();
+  setTimeout(() => { shareFlush(); shareLoad(false); }, 1500);
+  setInterval(() => { if (!document.hidden) { shareFlush(); shareLoad(false); } }, 300000);
+  window.addEventListener('online', () => { shareFlush(); shareLoad(false); });
+  fitAll(); useFallback(); updateRouteUI(); renderLightList();
   loadData(false);
   locate(true);   // местоположение отслеживается сразу при запуске
   document.addEventListener('visibilitychange', () => { if (!document.hidden && geoWatch == null) locate(true); });
