@@ -93,7 +93,7 @@
   function leaveWatch() {
     if (mode !== 'watch') return;
     // красный у выбранного светофора погас, зелёный камера не разглядела, но мы поехали — это был зелёный
-    if (pend && !gotG && nowE() - pend.t < 15000) fire('gs', pend.t, 'по погасшему красному и началу движения');
+    if (pend && !gotG && nowE() - pend.t < 15000) { fire('gs', pend.t, 'по погасшему красному и началу движения'); if (pend.first && typeof addObs === 'function') addObs('R', pend.first, pend.t); }
     mode = 'idle'; resetWatch(); lamps = []; preTried = false; setS('АВТО включён', 'Еду…', 1);
   }
   function onTrack(p) {
@@ -180,7 +180,7 @@
     }
     if (lock && lock.auto) { const own = lamps.find(L => !L.gone && L.n >= 5 && near(L)); if (own) { lock.x += (own.x - lock.x) * 0.05; lock.y += (own.y - lock.y) * 0.05; } }
     // 2) красный у выбранного светофора погас — кандидат на «начало зелёного»
-    if (lock && !gotG) for (const L of lamps) if (L.c === 1 && L.gone && !L.pendDone && L.n >= 8 && near(L)) { L.pendDone = true; pend = { t: L.gone }; }
+    if (lock && !gotG) for (const L of lamps) if (L.c === 1 && L.gone && !L.pendDone && L.n >= 8 && near(L)) { L.pendDone = true; pend = { t: L.gone, first: L.first }; }
     if (pend) {
       // снова виден красный у этого светофора — значит, его заслонили или это мигали цифры табло
       if (lamps.some(L => L.c === 1 && !L.gone && near(L) && L.last > pend.t + 400)) pend = null;
@@ -210,6 +210,9 @@
       if (!lock || lock.auto) lock = { x: old ? (L.x + old.x) / 2 : L.x, y: old ? (L.y + old.y) / 2 : L.y, r: 16 + 5 * Math.max(Math.sqrt(L.a), old ? Math.sqrt(old.a) : 0), auto: true };
       const te = evt === 'gs' && pend && Math.abs(pend.t - L.first) < 1000 ? Math.min(pend.t, L.first) : L.first;
       fire(evt, te, how);
+      // красный горел с того момента, как камера его впервые увидела, — для оценки длины красного
+      const redFrom = old && old.c === 1 ? old.first : pend && pend.first;
+      if (evt === 'gs' && redFrom && typeof addObs === 'function') addObs('R', redFrom, te);
       if (evt === 'gs') { gotG = true; pend = null; }
     }
     const cnt = [0, 0, 0, 0]; for (const L of lamps) if (!L.gone && L.n >= 3 && (!lock || near(L))) cnt[L.c]++;

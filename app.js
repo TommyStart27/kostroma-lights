@@ -881,6 +881,7 @@ function trackPush(x, y, sp, t) {
   tr.push({ x, y, t, sp });
   while (tr.length && t - tr[0].t > 120000) tr.shift();
   checkStop();
+  try { passCheck(tr[tr.length - 1]); } catch (e) {}
   if (window.gwAuto && gwAuto.on) gwAuto.onTrack(tr[tr.length - 1]);
 }
 function headingNow() {
@@ -910,6 +911,19 @@ function pickDet(det) {
   if (same) selectLight(det.L.id, false); else selectLight(det.L.id, false, det.key);
   if (S.me) S.selLock = { t: Date.now(), x: S.me.x, y: S.me.y };
   return same;
+}
+// проехали светофор без остановки: в этот момент для нашего направления горел зелёный (или жёлтый)
+function passCheck(p) {
+  if (!(p.sp > 4)) return;
+  for (const L of liveLights()) {
+    if (Math.abs(L.x - p.x) > 20 || Math.abs(L.y - p.y) > 20 || Math.hypot(L.x - p.x, L.y - p.y) > 20) continue;
+    S.lastPass = S.lastPass || {}; if (S.lastPass[L.id] && p.t - S.lastPass[L.id] < 120000) continue;
+    const hd = headingNow(); if (hd == null) continue;
+    S.lastPass[L.id] = p.t;
+    const a = nearApproach(L, hd, 45), key = a ? `${L.id}|${a.k}` : String(L.id);
+    const m = S.measBy[key] || (S.measBy[key] = { ev: [], obs: [], man: {} }); m.obs = m.obs || [];
+    m.obs.push({ c: 'G', t1: Math.round(p.t), t2: Math.round(p.t) }); saveMeas();
+  }
 }
 function checkStop() {
   const tr = S.trk, c = tr[tr.length - 1];
@@ -1126,11 +1140,23 @@ const LS_MEAS = 'kostroma_meas_v2', YDEF = 3, REACT = 300;          // жёлт�
 S.measBy = {};
 try { S.measBy = JSON.parse(localStorage.getItem(LS_MEAS) || '{}') || {}; } catch (e) { S.measBy = {}; }
 function saveMeas() {
-  const lim = Date.now() - 3 * 3600e3;
-  for (const [k, m] of Object.entries(S.measBy)) { m.ev = (m.ev || []).filter(e => e.t > lim).slice(-400); if (!m.ev.length && !Object.values(m.man || {}).some(Boolean)) delete S.measBy[k]; }
+  const lim = Date.now() - 14 * 86400e3;               // события храним 2 недели: цикл можно сложить из разных проездов
+  for (const [k, m] of Object.entries(S.measBy)) {
+    m.ev = (m.ev || []).filter(e => e.t > lim).slice(-800);
+    m.obs = (m.obs || []).filter(o => o.t2 > lim).slice(-300);
+    if (!m.ev.length && !m.obs.length && !Object.values(m.man || {}).some(Boolean)) delete S.measBy[k];
+  }
   try { localStorage.setItem(LS_MEAS, JSON.stringify(S.measBy, (k, v) => k === 'res' ? undefined : v)); } catch (e) {}
 }
-function getMeas() { const k = S.ek; let m = S.measBy[k]; if (!m) m = S.measBy[k] = { ev: [], man: {} }; m.man = m.man || {}; m.ev = m.ev || []; return m; }
+function getMeas() { const k = S.ek; let m = S.measBy[k]; if (!m) m = S.measBy[k] = { ev: [], obs: [], man: {} }; m.man = m.man || {}; m.ev = m.ev || []; m.obs = m.obs || []; return m; }
+// наблюдение «горел красный с t1 до t2» (подъехали — уже красный, дождались зелёного): красный не короче этого
+function addObsTo(m, c, t1, t2, strong) {
+  if (!(t2 - t1 >= 2000) || t2 - t1 > 300000) return;
+  const i = m.obs.findIndex(o => o.c === c && Math.abs(o.t2 - t2) < 3000);
+  if (i >= 0) { if (!strong) return; m.obs.splice(i, 1); }
+  m.obs.push({ c, t1: Math.round(t1), t2: Math.round(t2) });
+}
+function addObs(c, t1, t2) { if (S.selected == null) return; const m = getMeas(); addObsTo(m, c, t1, t2, true); saveMeas(); recompute(m); }
 // btn: gs/ge/rs/re; tEv — время касания или кадра; future — событие с табло (может быть в будущем) или точное время события
 function mark(btn, tEv, future) {
   if (S.selected == null) return;
@@ -1142,6 +1168,7 @@ function mark(btn, tEv, future) {
   const m = getMeas();
   if (m.ev.some(e => e.k === k && Math.abs(e.t - t) < 2500)) { m.last = btn; updMeas(); return; }   // «Конец красного» + «Начало зелёного» — одно событие
   m.ev.push({ t: Math.round(t), k }); m.ev.sort((a, b) => a.t - b.t);
+  const st = S.stop; if (k === 'g' && st && st.since && t - st.since > 3000 && t - st.since < 240000) addObsTo(m, 'R', st.since, t, false);
   m.last = btn;
   if (!future) { try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {} }
   saveMeas(); recompute(m);
@@ -1164,67 +1191,162 @@ function cleanEvents(ev) {
   }
   return out;
 }
-// расчёт по событиям: цикл C, фазы, точка отсчёта; null — пока данных мало
-function deriveTiming(evRaw) {
+// цикл по проездам, разнесённым во времени: между одноимёнными событиями уложилось целое число циклов.
+// Перебираем варианты по ближайшей паре и уточняем, добавляя всё более далёкие события; остаётся тот, что сходится со всеми.
+function fitCycleLong(ts, tol, minC) {
+  if (ts.length < 4) return null;
+  const t0 = ts[ts.length - 1], ds = ts.slice(0, -1).map(t => t0 - t).filter(d => d > 0).sort((a, b) => a - b);
+  if (ds.length < 3 || ds[ds.length - 1] < 1200) return null;   // нужны проезды, разнесённые во времени
+  const fit = P => { const mn = avg(P.map(p => p[0])), md = avg(P.map(p => p[1])); let nu = 0, de = 0; for (const [x, y] of P) { nu += (x - mn) * (y - md); de += (x - mn) ** 2; } const C = nu / de, b0 = md - C * mn; return { C, de, rms: Math.sqrt(avg(P.map(([x, y]) => (y - b0 - x * C) ** 2))) }; };
+  // перебор: номер круга до каждого следующего проезда; если по точности цикла он неоднозначен — пробуем соседние
+  const ok = []; let nodes = 0;
+  const go = (i, P, C, err) => {
+    if (++nodes > 30000) return;
+    if (i === ds.length) { const f = fit(P); if (f.rms <= tol) ok.push(f); return; }
+    const d = ds[i], lo = Math.max(1, Math.ceil((d - tol * 1.6) / (C + err))), hi = Math.floor((d + tol * 1.6) / Math.max(1, C - err));
+    for (let m = lo; m <= hi && m - lo < 50; m++) {
+      P.push([m, d]); const f = fit(P);
+      if (f.rms <= tol) go(i + 1, P, f.C, Math.max(0.002, tol * 1.6 / Math.sqrt(f.de)));
+      P.pop();
+    }
+  };
+  const d1 = ds[0];
+  for (let n = Math.max(1, Math.ceil(d1 / 150)); n <= Math.floor(d1 / 35); n++) go(1, [[0, 0], [n, d1]], d1 / n, tol * 1.6 / n);
+  // одинаковые варианты (почти тот же цикл) — оставляем лучший
+  const cand = [];
+  for (const o of ok.filter(o => o.C >= 35 && o.C <= 150 && !(minC && o.C < minC)).sort((a, b) => a.rms - b.rms)) if (!cand.some(c => Math.abs(c.C - o.C) < 0.05)) cand.push(o);
+  if (!cand.length) return null;
+  // лучший по точности; соперник (не кратный ему) почти так же хорош — данных пока мало
+  const best = cand[0], lim = Math.max(2.5 * best.rms, best.rms + 0.3);
+  const rel = (p, q) => { const k = Math.max(p.C, q.C) / Math.min(p.C, q.C); return Math.abs(k - Math.round(k)) < 0.02; };
+  const group = [best];
+  for (const o of cand.slice(1)) { if (o.rms >= lim) continue; if (!rel(best, o)) return null; group.push(o); }
+  if (group.length === 1) return best;
+  // C, C/2, C/3… по одним началам зелёного не различить: берём больший, но только при достаточном числе проездов
+  group.sort((a, b) => b.C - a.C);
+  return ts.length >= 7 ? group[0] : null;
+}
+// уточнить уже известный цикл C0 по проездам в другие дни/часы: идём от близких к далёким,
+// пока ошибка цикла × число кругов заведомо меньше допуска (иначе номер круга угадать нельзя)
+function refineSeed(ts, C0, tol) {
+  const t0 = ts[ts.length - 1], ds = ts.slice(0, -1).map(t => t0 - t).filter(d => d > 0).sort((a, b) => a - b);
+  let C = C0, err = 0.15, used = 0; const P = [[0, 0]];
+  for (const d of ds) {
+    const m = Math.round(d / C);
+    if (m * err > C / 2 - tol) break;                    // номер круга неоднозначен — дальше не верим
+    if (Math.abs(d - m * C) > tol * 1.6) return null;    // проезд не сходится с циклом — что-то не так
+    P.push([m, d]); used++;
+    const mn = avg(P.map(p => p[0])), md = avg(P.map(p => p[1])); let nu = 0, de = 0;
+    for (const [x, y] of P) { nu += (x - mn) * (y - md); de += (x - mn) ** 2; }
+    if (de > 0) { C = nu / de; err = Math.max(0.01, tol / Math.sqrt(de)); }
+  }
+  return used && P[P.length - 1][1] >= 1200 ? { C, span: P[P.length - 1][1] } : null;
+}
+// расчёт по событиям и наблюдениям: цикл C, фазы, точка отсчёта
+function deriveTiming(evRaw, extra) {
+  extra = extra || {};
   const ev = cleanEvents(evRaw);
+  const out = { ev, need: 'cycle' };
+  if (!ev.length) return out;
   const by = { g: [], y: [], r: [] };
   for (const e of ev) by[e.k].push(e.t / 1000);
-  // 1) примерный цикл: интервал между одноимёнными событиями, который лучше всех объясняет остальные (кратность учитывает пропущенные круги)
+  const tl = ev[ev.length - 1].t / 1000;
+  // 1) цикл внутри одной стоянки: интервалы до 15 минут между одноимёнными событиями
   const ints = [];
   for (const k of 'gyr') for (let i = 1; i < by[k].length; i++) { const d = by[k][i] - by[k][i - 1]; if (d >= 15 && d <= 900) ints.push(d); }
-  if (!ints.length) return { ev, need: 'cycle' };
-  let C0 = null, best = -1;
-  for (const c of ints) {
-    if (c > 300) continue;
-    let sc = 0; for (const d of ints) { const n = Math.round(d / c); if (n >= 1 && Math.abs(d - n * c) < Math.max(2.5, 0.04 * c)) sc += 1 / n; }
-    if (sc > best + 1e-9 || (Math.abs(sc - best) < 1e-9 && c < C0)) { best = sc; C0 = c; }
-  }
-  if (!C0) return { ev, need: 'cycle' };
-  // 2) уточнение: t = a_k + n·C по всем событиям сразу, с отбрасыванием выбросов
-  let C = C0, pts = [];
-  for (let it = 0; it < 3; it++) {
-    pts = [];
-    for (const k of 'gyr') { if (!by[k].length) continue; const t0 = by[k][0]; for (const t of by[k]) pts.push({ k, t, n: Math.round((t - t0) / C) }); }
-    const grp = {}; for (const p of pts) (grp[p.k] = grp[p.k] || []).push(p);
-    let num = 0, den = 0;
-    for (const g of Object.values(grp)) { if (g.length < 2) continue; const mn = avg(g.map(p => p.n)), mt = avg(g.map(p => p.t)); for (const p of g) { num += (p.n - mn) * (p.t - mt); den += (p.n - mn) ** 2; } }
-    if (den > 0) C = num / den;
-    // выбросы: дальше 2,5 с от прямой — убираем
-    let bad = false;
-    for (const k of 'gyr') {
-      const g = grp[k]; if (!g || g.length < 2) continue;
-      const a0 = med(g.map(p => p.t - p.n * C));   // медиана — устойчива к ошибочным нажатиям
-      const keep = g.filter(p => Math.abs(p.t - p.n * C - a0) <= 2.5);
-      if (keep.length < g.length && keep.length >= 2) { by[k] = keep.map(p => p.t); bad = true; }
+  let C = null, src = null;
+  if (ints.length) {
+    let C0 = null, best = -1;
+    for (const c of ints) {
+      if (c < 35 || c > 150) continue;   // кандидат — один круг; длинные интервалы учитываются как кратные
+      let sc = 0; for (const d of ints) { const n = Math.round(d / c); if (n >= 1 && Math.abs(d - n * c) < Math.max(2.5, 0.04 * c)) sc += 1 / n; }
+      if (sc > best + 1e-9 || (Math.abs(sc - best) < 1e-9 && c < C0)) { best = sc; C0 = c; }
     }
-    if (!bad && it > 0) break;
+    if (C0) {
+      // уточняем по каждой стоянке отдельно (свой сдвиг на каждую стоянку и тип события)
+      let num = 0, den = 0;
+      const addSes = ses => {
+        if (ses.length < 2) return;
+        const pts = ses.map(t => ({ t, n: Math.round((t - ses[0]) / C0) }));
+        const a0 = med(pts.map(p => p.t - p.n * C0)), P = pts.filter(p => Math.abs(p.t - p.n * C0 - a0) <= 2.5);
+        if (P.length < 2) return;
+        const mn = avg(P.map(p => p.n)), mt = avg(P.map(p => p.t));
+        for (const p of P) { num += (p.n - mn) * (p.t - mt); den += (p.n - mn) ** 2; }
+      };
+      for (const k of 'gyr') {
+        let ses = []; const arr = by[k];
+        for (let i = 0; i < arr.length; i++) { if (i && arr[i] - arr[i - 1] > 900) { addSes(ses); ses = []; } ses.push(arr[i]); }
+        addSes(ses);
+      }
+      C = den > 0 ? num / den : C0; src = 'stop';
+    }
   }
-  // 3) фазы внутри цикла: средний сдвиг каждого события
+  // 2) цикл по разным проездам (только начала зелёного — их видно почти при каждой остановке)
+  const wmx = Math.max(0, ...(extra.obs || []).filter(o => o.c === 'R').map(o => (o.t2 - o.t1) / 1000).filter(w => w < 200));
+  const long = fitCycleLong(by.g, 1.2, wmx ? wmx + YDEF + 4 : 0);
+  if (long && (!C || Math.abs(long.C - C) < 1)) { C = long.C; src = 'passes'; }
+  else if (C && !long && by.g.length >= 3) { const rs = refineSeed(by.g, C, 1.2); if (rs) { C = rs.C; src = 'passes'; } }
+  // 3) цикл у других направлений этого перекрёстка или у соседей по улице (обычно общий — «зелёная волна»)
+  if (!C && extra.hints) {
+    for (const h of extra.hints) {
+      let fits = true;
+      // каждый промежуток между началами зелёного должен быть целым числом кругов (с небольшим запасом на часы)
+      for (let i = 1; i < by.g.length; i++) { const d = by.g[i] - by.g[i - 1]; if (d < 5) continue; const n = Math.round(d / h.C); if (n < 1 || Math.abs(d - n * h.C) > 1.5 + d * 0.00002) { fits = false; break; } }
+      if (fits) { C = h.C; src = 'hint'; out.hint = h.src; break; }
+    }
+  }
+  if (!C) return out;
+  out.C = C; out.src = src; out.need = null;
+  // 4) фазы: при надёжном цикле — по всем событиям, иначе по последним 30 минутам
+  const win = src === 'passes' ? Infinity : src === 'stop' ? 6 * 3600 : 1800;
   const ph = {}, res = [];
   for (const k of 'gyr') {
-    if (!by[k].length) continue;
-    const t0 = by[k][0]; let xs = by[k].map(t => t - Math.round((t - t0) / C) * C);
+    const arr = by[k].filter(t => tl - t <= win); if (!arr.length) continue;
+    const tk = arr[arr.length - 1];                       // отсчёт от последнего события этого типа — без перескока через край цикла
+    let xs = arr.map(t => t - tk - Math.round((t - tk) / C) * C);
     const mx = med(xs); const inl = xs.filter(x => Math.abs(x - mx) <= 2.5); if (inl.length) xs = inl;
-    ph[k] = avg(xs); for (const x of xs) res.push(x - ph[k]);
+    const m0 = avg(xs); ph[k] = tk + m0; for (const x of xs) res.push(x - m0);
   }
-  const rms = res.length ? Math.sqrt(avg(res.map(v => v * v))) : 0;
-  const nCyc = Math.max(...Object.values(by).map(a => a.length ? Math.round((a[a.length - 1] - a[0]) / C) : 0));
-  const out = { ev, C, rms, nCyc, need: null };
-  if (ph.g == null || (ph.r == null && ph.y == null)) { out.need = ph.g == null ? 'g' : 'r'; return out; }
+  out.rms = res.length > 1 ? Math.sqrt(avg(res.map(v => v * v))) : 0;
+  out.nCyc = src === 'passes' ? 0 : Math.max(0, ...Object.values(by).map(a => { const b = a.filter(t => tl - t <= 900 * 4); return b.length ? Math.round((b[b.length - 1] - b[0]) / C) : 0; }));
+  out.nPass = by.g.length;
+  if (ph.g == null) { out.need = 'g'; return out; }
   const mod = v => ((v % C) + C) % C;
-  let g, y;
-  if (ph.y != null) { g = mod(ph.y - ph.g); y = ph.r != null ? mod(ph.r - ph.y) : YDEF; }
-  else { const gy = mod(ph.r - ph.g); y = gy > 2 * YDEF ? YDEF : 0; g = gy - y; }
+  let g, y, r, est = null;
+  if (ph.y != null || ph.r != null) {
+    if (ph.y != null) { g = mod(ph.y - ph.g); y = ph.r != null ? mod(ph.r - ph.y) : YDEF; }
+    else { const gy = mod(ph.r - ph.g); y = gy > 2 * YDEF ? YDEF : 0; g = gy - y; }
+    r = C - g - y;
+  } else {
+    // 5) начала красного не видели — оцениваем по наблюдениям:
+    //    каждое ожидание на красном не длиннее красного, каждый проезд на зелёный — не позже конца зелёного.
+    //    Самое большое из n случайных значений в среднем равно настоящему·n/(n+1) — на это и поправляем.
+    const obs = (extra.obs || []).filter(o => tl - o.t2 / 1000 <= win);
+    const ws = obs.filter(o => o.c === 'R').map(o => (o.t2 - o.t1) / 1000).filter(w => w > 2 && w < C);
+    const ps = obs.filter(o => o.c === 'G').map(o => mod(o.t1 / 1000 - ph.g)).filter(p => p < C - YDEF - 5);
+    if (!ws.length && !ps.length) { out.need = 'r'; return out; }
+    y = YDEF;
+    const Rl = ws.length ? Math.max(...ws) : 0, Gl = ps.length ? Math.max(...ps) : 0;
+    let Rh = ws.length ? Rl * (ws.length + 1) / ws.length : null, Gh = ps.length ? Gl * (ps.length + 1) / ps.length : null;
+    if (Rh != null && Gh != null) { const k = (C - y) / (Rh + Gh); Rh *= k; Gh *= k; }
+    if (Rh != null) r = Math.min(Math.max(Rh, Rl), C - y - Math.max(6, Gl)); else r = C - y - Math.min(Math.max(Gh, Gl), C - y - 6);
+    // при малом числе наблюдений подтягиваем к середине (половина круга), но не нарушая увиденного
+    { const N = ws.length + ps.length, pr = (C - y) / 2; r = (r * N + pr) / (N + 1); r = Math.max(r, Rl); r = Math.min(r, C - y - Math.max(6, Gl)); }
+    g = C - y - r;
+    est = { n: ws.length, wmax: Rl, np: ps.length, gmin: Gl };
+  }
   if (!(g > 0) || y > 8 || g + y >= C) { out.need = 'r'; return out; }
-  // точка отсчёта — начало зелёного ближайшего к последнему событию круга
-  const tl = ev[ev.length - 1].t / 1000;
-  const a = (ph.g + Math.round((tl - ph.g) / C) * C) * 1000;
-  return Object.assign(out, { g, y, r: C - g - y, a, yMeasured: ph.y != null && ph.r != null });
+  const a = (ph.g + Math.round((tl - ph.g) / C) * C) * 1000;   // начало зелёного ближайшего к последнему событию круга
+  return Object.assign(out, { g, y, r, a, est });
 }
 // поля и сохранение (вписанное вручную не перезаписывается)
 function recompute(m) {
-  const man = m.man || {}, d = deriveTiming(m.ev);
+  const man = m.man || {}, d = deriveTiming(m.ev, { obs: m.obs, hints: cycleHints(S.selected, S.ek) });
   m.res = d;
+  if (d.g == null && d.need === 'cycle' && S.mine[S.ek] && S.mine[S.ek].via === 'hint') {
+    delete S.timings[S.ek]; delete m.fit; saveTimings(); loadFields(); renderLightList(); draw();
+    toast('Цикл соседа не подошёл к новым замерам — тайминг убран, ждём ещё проездов');
+  }
   if (d.g != null) {
     let { g, y, r } = d;
     const num = id => parseFloat($(id).value);
@@ -1233,10 +1355,27 @@ function recompute(m) {
     r = man.r && num('fR') > 0 ? num('fR') : d.C - g - y;
     if (!man.g) $('fG').value = r1(g); if (!man.y) $('fY').value = r1(y); if (!man.r) $('fR').value = r1(r);
     $('fA').value = fmtT(d.a);
-    m.fit = { g, y, r, a: d.a };
-    if (g > 0 && r > 0) saveLight(true);
+    m.fit = { g, y, r, a: d.a, est: !!d.est };
+    if (g > 0 && r > 0) { saveLight(true); if (S.mine[S.ek]) { if (d.src === 'hint') S.mine[S.ek].via = 'hint'; else delete S.mine[S.ek].via; saveTimings(); } }
   }
   updMeas();
+}
+// подсказки цикла: другие направления этого перекрёстка, затем соседние светофоры на той же улице (до 1,5 км)
+function cycleHints(id, key) {
+  const out = [], L = S.lights[id]; if (!L) return out;
+  const cyc = T => T && T.g > 0 && T.r > 0 ? T.g + (T.y || 0) + T.r : null;   // цикл известен, даже если красный — по оценке
+  for (const src of [S.mine, S.shared]) for (const [k, T] of Object.entries(src)) {
+    if (parseInt(k) !== id || k === key) continue; const c = cyc(T); if (c) out.push({ C: c, src: 'другое направление этого перекрёстка' });
+  }
+  const near = [];
+  for (const M of liveLights()) {
+    if (M.id === id || !M.streets || !L.streets) continue;
+    const d = Math.hypot(M.x - L.x, M.y - L.y); if (d > 1500) continue;
+    const st = M.streets.find(s => L.streets.includes(s)); if (!st) continue;
+    for (const src of [S.mine, S.shared]) for (const [k, T] of Object.entries(src)) if (parseInt(k) === M.id) { const c = cyc(T); if (c) near.push({ C: c, d, src: `соседний #${M.id + 1} (${st})` }); }
+  }
+  near.sort((a, b) => a.d - b.d);
+  return out.concat(near);
 }
 // табло обратного отсчёта: «осталось N с» на зелёном/красном = будущее нажатие кнопки
 function countdown(color) {
@@ -1253,23 +1392,25 @@ function updMeas() {
   const m = S.measBy[S.ek], ev = (m && m.ev) || [];
   document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(ev.length && m.last === b.dataset.mk)));
   if (!ev.length) { el.innerHTML = 'Жмите кнопку в момент смены сигнала. Подъехали на красный — нажмите «Конец красного», когда загорится зелёный, затем «Начало красного», затем снова «Начало зелёного». Есть табло с секундами — впишите число и нажмите цвет. Длительность можно вписать и вручную в поля ниже.'; return; }
-  const now = Date.now(), d = deriveTiming(ev), cl = d.ev && d.ev.length ? d.ev : ev;
+  const now = Date.now(), d = deriveTiming(ev, { obs: m.obs, hints: cycleHints(S.selected, S.ek) }), cl = d.ev && d.ev.length ? d.ev : ev;
   const past = cl.filter(e => e.t <= now), lastE = past[past.length - 1], nextE = cl.find(e => e.t > now);
   let head = '';
   if (nextE) head = `⏳ ${nextE.k === 'g' ? 'зелёный' : 'красный'} загорится через <b>${((nextE.t - now) / 1000).toFixed(1)} с</b>`;
+  else if (lastE && now - lastE.t > 300000) head = `Последняя отметка ${fmtT(lastE.t)}${now - lastE.t > 86400e3 ? ' (' + new Date(lastE.t).toLocaleDateString('ru-RU') + ')' : ''} · всего отметок: ${cl.length}`;
   else if (lastE) {
     const what = { g: 'горит зелёный', y: 'горит жёлтый', r: 'горит красный' }[lastE.k];
     const next = { g: '«Конец зелёного» или «Начало красного»', y: '«Начало красного»', r: '«Начало зелёного»' }[lastE.k];
     head = `⏱ ${what}: <b>${((now - lastE.t) / 1000).toFixed(1)} с</b> · дальше ${next}`;
   }
   let acc = '';
-  if (d.C) acc = ` · цикл <b>${d.C.toFixed(1)} с</b>` + (d.nCyc >= 1 ? ` по ${d.nCyc} ${d.nCyc === 1 ? 'кругу' : d.nCyc < 5 ? 'кругам' : 'кругам'}` : '');
+  if (d.C) acc = ` · цикл <b>${d.C.toFixed(1)} с</b>` + (d.src === 'passes' ? ` по ${d.nPass} проездам` : d.src === 'hint' ? ` (взят: ${d.hint})` : d.nCyc >= 1 ? ` по ${d.nCyc} ${d.nCyc === 1 ? 'кругу' : 'кругам'}` : '');
+  if (d.est) acc += `<br>красный ≈ <b>${d.r.toFixed(0)} с</b>, зелёный ≈ <b>${d.g.toFixed(0)} с</b> — оценка по ${d.est.n} ожид. на красном` + (d.est.np ? ` и ${d.est.np} проездам на зелёный` : '') + `; станет точной, когда камера увидит, как загорается красный или жёлтый`;
   const dropped = ev.length - (d.ev ? d.ev.length : ev.length);
   let tail;
-  if (d.need === 'cycle') tail = '<span style="color:var(--muted)">Ещё нужно: дождаться такого же сигнала на следующем круге — так узнаем длину цикла</span>';
+  if (d.need === 'cycle') tail = '<span style="color:var(--muted)">Ещё нужно: длина цикла — дождитесь следующего такого же сигнала, или она сложится из нескольких проездов (обычно 4–5 остановок), или возьмётся у соседнего замеренного светофора на этой улице</span>';
   else if (d.need === 'g') tail = '<span style="color:var(--muted)">Ещё нужно: момент начала зелёного</span>';
-  else if (d.need === 'r') tail = '<span style="color:var(--muted)">Ещё нужно: момент начала красного (или жёлтого)</span>';
-  else tail = '<span style="color:var(--g)">✓ Тайминг полный и сохранён</span>' + (d.nCyc < 3 ? '<span style="color:var(--muted)"> · каждый следующий круг делает его точнее</span>' : '');
+  else if (d.need === 'r') tail = '<span style="color:var(--muted)">Ещё нужно: начало красного (или жёлтого) — либо хотя бы одна остановка на красном до зелёного</span>';
+  else tail = (d.est ? '<span style="color:var(--g)">✓ Тайминг сохранён (красный — по оценке)</span>' : '<span style="color:var(--g)">✓ Тайминг полный и сохранён</span>') + (d.nCyc < 3 ? '<span style="color:var(--muted)"> · каждый следующий круг делает его точнее</span>' : '');
   if (d.rms > 1.5) tail += `<br><span style="color:var(--r)">⚠ Смены сигнала гуляют на ±${d.rms.toFixed(1)} с — похоже, у светофора меняется режим (адаптивный, вызывная кнопка или другое время суток). Предсказание может ошибаться.</span>`;
   if (dropped > 0) tail += `<br><span style="color:var(--muted)">Отброшено как ошибки или мерцание: ${dropped}</span>`;
   el.innerHTML = head + acc + '<br>' + tail;
@@ -1292,6 +1433,7 @@ function saveLight(auto) {
   if (!(g > 0) || isNaN(r) || r < 0) { toast('Укажите зелёный и красный в секундах'); return; }
   if (a == null) { toast('Отметьте начало зелёного кнопкой или впишите время ЧЧ:ММ:СС'); return; }
   S.timings[S.ek] = S.ek.includes('|') ? { g, y: isNaN(y) ? 0 : y, r, a } : { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
+  if (auto && fm && fm.est) S.mine[S.ek].est = 1; else if (S.mine[S.ek]) delete S.mine[S.ek].est;
   saveTimings(); renderLightList(); renderApr(); tickEditor(); draw();
   if (auto && prev && Math.abs(prev.g - g) < 0.3 && Math.abs((prev.y || 0) - y) < 0.3 && Math.abs(prev.r - r) < 0.3) return;   // уточнение без заметных изменений — без лишних сообщений
   toast(auto ? `Замер сохранён: зелёный ${r1(g)} с, жёлтый ${r1(isNaN(y) ? 0 : y)} с, красный ${r1(r)} с` : (lsGet('kostroma_share_off', '') ? 'Сохранено в «Мои»' : 'Сохранено в «Мои» и отправлено в общую базу'));
