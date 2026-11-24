@@ -109,7 +109,7 @@
     const c = classify();
     if (c && c !== 'off') {
       if (c === run.c) run.n++; else run = { c, n: 1, t0: tFrame };
-      if (run.n === NEED && c !== colorState) commit(c, run.t0);
+      if (run.n >= NEED && !run.done && c !== colorState && tFrame - run.t0 >= 800) { run.done = true; commit(c, run.t0); }   // цвет должен продержаться 0,8 с — мерцание не считается
     }
     // 'off' (мигание зелёного, промежуток между кадрами) не считаем сменой сигнала
   }
@@ -118,9 +118,9 @@
     const name = { G: 'зелёный', Y: 'жёлтый', R: 'красный' }[c];
     setStatus(c, 'Горит ' + name);
     if (prev == null) { logEv(t, 'вижу ' + name + ' (начало замера)'); return; }
-    if (c === 'G') { mark('gs', t); logEv(t, '→ начало зелёного'); }
-    else if (c === 'Y' && prev === 'G') { mark('ge', t); logEv(t, '→ конец зелёного (жёлтый)'); }
-    else if (c === 'R' && prev !== 'R') { mark('rs', t); logEv(t, '→ начало красного'); }
+    if (c === 'G') { mark('gs', t, true); logEv(t, '→ начало зелёного'); }
+    else if (c === 'Y' && prev === 'G') { mark('ge', t, true); logEv(t, '→ конец зелёного (жёлтый)'); }
+    else if (c === 'R' && prev !== 'R') { mark('rs', t, true); logEv(t, '→ начало красного'); }
     else if (c === 'Y' && prev === 'R') { colorState = 'R'; logEv(t, 'красный + жёлтый (ждём зелёный)'); }
   }
 

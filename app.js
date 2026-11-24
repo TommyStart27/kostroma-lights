@@ -860,9 +860,8 @@ function renderApr() {
 }
 function setEk(k) { S.ek = k; loadFields(); }
 function loadFields() {
-  const L = S.lights[S.selected], T = S.timings[S.ek] || {};
-  $('fG').value = T.g ?? ''; $('fY').value = T.y ?? ''; $('fR').value = T.r ?? ''; $('fA').value = T.a != null ? fmtT(T.a) : '';
-  if (S.meas && S.meas.id !== S.ek) S.meas = null;
+  const L = S.lights[S.selected], T = S.mine[S.ek] || S.timings[S.ek] || {};   // редактор — про ваши замеры
+  $('fG').value = T.g != null ? r1(T.g) : ''; $('fY').value = T.y != null ? r1(T.y) : ''; $('fR').value = T.r != null ? r1(T.r) : ''; $('fA').value = T.a != null ? fmtT(T.a) : '';
   const sel = $('fMain'); sel.innerHTML = '';
   const opts = L.streets.length ? L.streets : ['—'];
   for (const s of opts) { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); }
@@ -904,6 +903,14 @@ function detectAhead() {
   const a = hd != null ? nearApproach(best, hd, 50) : null;
   return { L: best, key: a ? `${best.id}|${a.k}` : String(best.id), a, d: bd };
 }
+// выбор светофора по остановке: если стоим у того же светофора, что и недавно, направление не меняем
+// (иначе дрожание GPS переключало подъезды и замер начинался заново)
+function pickDet(det) {
+  const lk = S.selLock, same = lk && det.L.id === S.selected && Date.now() - lk.t < 15 * 60e3 && S.me && Math.hypot(S.me.x - lk.x, S.me.y - lk.y) < 120;
+  if (same) selectLight(det.L.id, false); else selectLight(det.L.id, false, det.key);
+  if (S.me) S.selLock = { t: Date.now(), x: S.me.x, y: S.me.y };
+  return same;
+}
 function checkStop() {
   const tr = S.trk, c = tr[tr.length - 1];
   const st = S.stop || (S.stop = { since: 0, done: false, at: null });
@@ -917,7 +924,7 @@ function checkStop() {
   if (window.gwAuto && gwAuto.on && !det) { gwAuto.onStop(null); return; }
   if (!det) return;
   const lbl = '#' + (det.L.id + 1) + ' ' + (det.L.name || 'светофор') + (det.a ? ' · ' + det.a.arrow + ' ' + det.a.from : '');
-  if (window.gwAuto && gwAuto.on) { selectLight(det.L.id, false, det.key); gwAuto.onStop(det, lbl); return; }
+  if (window.gwAuto && gwAuto.on) { pickDet(det); gwAuto.onStop(det, lbl); return; }
   if (window.gwCamera && gwCamera.isOpen()) { selectLight(det.L.id, false, det.key); gwCamera.retarget(lbl); return; }
   ask('Стоите у ' + lbl + '?', [
     ['📷 Замер камерой', () => { selectLight(det.L.id, true, det.key); showTab('lights'); window.gwCamera && gwCamera.open(true); }, true],
@@ -1109,56 +1116,126 @@ function selectLight(i, center, key) {
   loadFields(); renderLightList();
   const it = $('lightList').querySelector('[data-i="' + i + '"]'); if (it) it.scrollIntoView({ block: 'nearest' });
 }
-// ---- замер у светофора: кнопки «загорелся», цикл усредняется по нескольким кругам
+// ---- замер у светофора: события «загорелся зелёный / жёлтый / красный», по ним — цикл и фазы
+// Все события хранятся (и переживают перезапуск приложения), а расчёт каждый раз делается заново по всем:
+// ошибки, мерцание, пропущенные круги отбрасываются, цикл считается по всем кругам сразу (метод наименьших квадратов).
 const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
+const med = a => { const b = a.slice().sort((x, y) => x - y), n = b.length; return n % 2 ? b[(n - 1) / 2] : (b[n / 2 - 1] + b[n / 2]) / 2; };
 const r1 = v => Math.round(v * 10) / 10;
-function getMeas() {
-  let m = (S.meas && S.meas.id === S.ek) ? S.meas : null;
-  if (!m || !m.cyc) m = S.meas = { id: S.ek, cyc: [], gr: [], ye: [], re: [], man: {} };
-  m.man = m.man || {};
-  return m;
+const LS_MEAS = 'kostroma_meas_v2', YDEF = 3, REACT = 300;          // жёлтый по ГОСТ — 3 с, если его не отметили
+S.measBy = {};
+try { S.measBy = JSON.parse(localStorage.getItem(LS_MEAS) || '{}') || {}; } catch (e) { S.measBy = {}; }
+function saveMeas() {
+  const lim = Date.now() - 3 * 3600e3;
+  for (const [k, m] of Object.entries(S.measBy)) { m.ev = (m.ev || []).filter(e => e.t > lim).slice(-400); if (!m.ev.length && !Object.values(m.man || {}).some(Boolean)) delete S.measBy[k]; }
+  try { localStorage.setItem(LS_MEAS, JSON.stringify(S.measBy, (k, v) => k === 'res' ? undefined : v)); } catch (e) {}
 }
-// btn: gs/ge/rs/re; tEv — время касания; future — событие из табло (может быть в будущем)
+function getMeas() { const k = S.ek; let m = S.measBy[k]; if (!m) m = S.measBy[k] = { ev: [], man: {} }; m.man = m.man || {}; m.ev = m.ev || []; return m; }
+// btn: gs/ge/rs/re; tEv — время касания или кадра; future — событие с табло (может быть в будущем) или точное время события
 function mark(btn, tEv, future) {
   if (S.selected == null) return;
-  // 4 кнопки → 3 события: начало зелёного = конец красного, начало красного = конец зелёного
-  const k = { gs: 'g', re: 'g', ge: 'y', rs: 'r' }[btn] || btn;
-  const now = future ? tEv : ((tEv && Math.abs(tEv - Date.now()) < 1500) ? tEv : Date.now());
+  const k = { gs: 'g', re: 'g', ge: 'y', rs: 'r' }[btn] || btn;     // 4 кнопки → 3 события
+  if (!'gyr'.includes(k || '-') || !k) return;
+  // нажатие пальцем запаздывает за сменой сигнала примерно на 0,3 с — вычитаем; события камеры и табло приходят с точным временем
+  const t = future ? tEv : ((tEv && Math.abs(tEv - Date.now()) < 1500) ? tEv : Date.now()) - REACT;
+  if (!Number.isFinite(t)) return;
   const m = getMeas();
-  const fresh = (t, lim) => t != null && Math.abs(now - t) < lim;
-  const ago = t => (now - t) / 1000;
-  if (k === m.lk && fresh(m.t, 2500)) { m.last = btn; updMeas(); return; }   // тот же момент дважды («Конец красного» + «Начало зелёного»)
-  if (k === 'g') {
-    if (fresh(m.g, 300000) && ago(m.g) > 8) m.cyc.push(ago(m.g));
-    if (fresh(m.r, 300000) && ago(m.r) > 0) m.re.push(ago(m.r));
-    m.g = now; m.y = null; m.r = null;
-  } else if (k === 'y') {
-    if (fresh(m.g, 300000) && ago(m.g) > 0) m.gr.push(ago(m.g));
-    m.y = now;
-  } else if (k === 'r') {
-    if (fresh(m.y, 15000) && ago(m.y) > 0) m.ye.push(ago(m.y));
-    else if (fresh(m.g, 300000) && ago(m.g) > 0) m.gr.push(ago(m.g) - (m.ye.length ? avg(m.ye) : 0));
-    m.r = now; m.y = null;
-  }
-  m.last = btn; m.lk = k; m.t = now;
+  if (m.ev.some(e => e.k === k && Math.abs(e.t - t) < 2500)) { m.last = btn; updMeas(); return; }   // «Конец красного» + «Начало зелёного» — одно событие
+  m.ev.push({ t: Math.round(t), k }); m.ev.sort((a, b) => a.t - b.t);
+  m.last = btn;
   if (!future) { try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {} }
-  recompute(m);
+  saveMeas(); recompute(m);
 }
-// собираем фазы из замеров и того, что вписано вручную (вручную вписанное не перезаписывается)
+// чистим последовательность: мерцание, повторы и невозможные переходы
+function cleanEvents(ev) {
+  let a = ev.slice().sort((x, y) => x.t - y.t);
+  // мерцание: событие, после которого меньше чем через 1,5 с вернулся прежний цвет, — не было ни того, ни другого
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let i = 1; i + 1 < a.length; i++) if (a[i + 1].t - a[i].t < 1500 && a[i + 1].k === a[i - 1].k && a[i].k !== a[i - 1].k) { a.splice(i, 2); changed = true; break; }
+  }
+  const out = [];
+  for (const e of a) {
+    let last = out[out.length - 1];
+    if (last && last.k === e.k && e.t - last.t < 5000) continue;          // повтор
+    if (last && last.k === 'r' && e.k === 'y') continue;                  // красный+жёлтый или помеха
+    if (last && last.k === 'y' && e.k === 'g') { out.pop(); last = out[out.length - 1]; if (last && last.k === e.k && e.t - last.t < 5000) continue; }   // «жёлтый» перед зелёным был ложным
+    out.push(e);
+  }
+  return out;
+}
+// расчёт по событиям: цикл C, фазы, точка отсчёта; null — пока данных мало
+function deriveTiming(evRaw) {
+  const ev = cleanEvents(evRaw);
+  const by = { g: [], y: [], r: [] };
+  for (const e of ev) by[e.k].push(e.t / 1000);
+  // 1) примерный цикл: интервал между одноимёнными событиями, который лучше всех объясняет остальные (кратность учитывает пропущенные круги)
+  const ints = [];
+  for (const k of 'gyr') for (let i = 1; i < by[k].length; i++) { const d = by[k][i] - by[k][i - 1]; if (d >= 15 && d <= 900) ints.push(d); }
+  if (!ints.length) return { ev, need: 'cycle' };
+  let C0 = null, best = -1;
+  for (const c of ints) {
+    if (c > 300) continue;
+    let sc = 0; for (const d of ints) { const n = Math.round(d / c); if (n >= 1 && Math.abs(d - n * c) < Math.max(2.5, 0.04 * c)) sc += 1 / n; }
+    if (sc > best + 1e-9 || (Math.abs(sc - best) < 1e-9 && c < C0)) { best = sc; C0 = c; }
+  }
+  if (!C0) return { ev, need: 'cycle' };
+  // 2) уточнение: t = a_k + n·C по всем событиям сразу, с отбрасыванием выбросов
+  let C = C0, pts = [];
+  for (let it = 0; it < 3; it++) {
+    pts = [];
+    for (const k of 'gyr') { if (!by[k].length) continue; const t0 = by[k][0]; for (const t of by[k]) pts.push({ k, t, n: Math.round((t - t0) / C) }); }
+    const grp = {}; for (const p of pts) (grp[p.k] = grp[p.k] || []).push(p);
+    let num = 0, den = 0;
+    for (const g of Object.values(grp)) { if (g.length < 2) continue; const mn = avg(g.map(p => p.n)), mt = avg(g.map(p => p.t)); for (const p of g) { num += (p.n - mn) * (p.t - mt); den += (p.n - mn) ** 2; } }
+    if (den > 0) C = num / den;
+    // выбросы: дальше 2,5 с от прямой — убираем
+    let bad = false;
+    for (const k of 'gyr') {
+      const g = grp[k]; if (!g || g.length < 2) continue;
+      const a0 = med(g.map(p => p.t - p.n * C));   // медиана — устойчива к ошибочным нажатиям
+      const keep = g.filter(p => Math.abs(p.t - p.n * C - a0) <= 2.5);
+      if (keep.length < g.length && keep.length >= 2) { by[k] = keep.map(p => p.t); bad = true; }
+    }
+    if (!bad && it > 0) break;
+  }
+  // 3) фазы внутри цикла: средний сдвиг каждого события
+  const ph = {}, res = [];
+  for (const k of 'gyr') {
+    if (!by[k].length) continue;
+    const t0 = by[k][0]; let xs = by[k].map(t => t - Math.round((t - t0) / C) * C);
+    const mx = med(xs); const inl = xs.filter(x => Math.abs(x - mx) <= 2.5); if (inl.length) xs = inl;
+    ph[k] = avg(xs); for (const x of xs) res.push(x - ph[k]);
+  }
+  const rms = res.length ? Math.sqrt(avg(res.map(v => v * v))) : 0;
+  const nCyc = Math.max(...Object.values(by).map(a => a.length ? Math.round((a[a.length - 1] - a[0]) / C) : 0));
+  const out = { ev, C, rms, nCyc, need: null };
+  if (ph.g == null || (ph.r == null && ph.y == null)) { out.need = ph.g == null ? 'g' : 'r'; return out; }
+  const mod = v => ((v % C) + C) % C;
+  let g, y;
+  if (ph.y != null) { g = mod(ph.y - ph.g); y = ph.r != null ? mod(ph.r - ph.y) : YDEF; }
+  else { const gy = mod(ph.r - ph.g); y = gy > 2 * YDEF ? YDEF : 0; g = gy - y; }
+  if (!(g > 0) || y > 8 || g + y >= C) { out.need = 'r'; return out; }
+  // точка отсчёта — начало зелёного ближайшего к последнему событию круга
+  const tl = ev[ev.length - 1].t / 1000;
+  const a = (ph.g + Math.round((tl - ph.g) / C) * C) * 1000;
+  return Object.assign(out, { g, y, r: C - g - y, a, yMeasured: ph.y != null && ph.r != null });
+}
+// поля и сохранение (вписанное вручную не перезаписывается)
 function recompute(m) {
-  const man = m.man || {};
-  const num = id => parseFloat($(id).value);
-  const y = man.y ? (num('fY') || 0) : (m.ye.length ? avg(m.ye) : 0);
-  const g = man.g ? num('fG') : (m.gr.length ? avg(m.gr) : null);
-  let r = null;
-  if (man.r) r = num('fR');
-  else if (m.cyc.length && g > 0) r = avg(m.cyc) - g - y;
-  else if (m.re.length) r = avg(m.re);
-  if (!man.g && g != null) $('fG').value = r1(g);
-  if (!man.y && (m.ye.length || m.gr.length)) $('fY').value = r1(y);
-  if (!man.r && r != null && r > 0) $('fR').value = r1(r);
-  if (m.g) $('fA').value = fmtT(m.g);
-  if (g > 0 && r > 0 && m.g) saveLight(true);
+  const man = m.man || {}, d = deriveTiming(m.ev);
+  m.res = d;
+  if (d.g != null) {
+    let { g, y, r } = d;
+    const num = id => parseFloat($(id).value);
+    if (man.y && num('fY') >= 0) { y = num('fY'); }
+    if (man.g && num('fG') > 0) { g = num('fG'); }
+    r = man.r && num('fR') > 0 ? num('fR') : d.C - g - y;
+    if (!man.g) $('fG').value = r1(g); if (!man.y) $('fY').value = r1(y); if (!man.r) $('fR').value = r1(r);
+    $('fA').value = fmtT(d.a);
+    m.fit = { g, y, r, a: d.a };
+    if (g > 0 && r > 0) saveLight(true);
+  }
   updMeas();
 }
 // табло обратного отсчёта: «осталось N с» на зелёном/красном = будущее нажатие кнопки
@@ -1173,45 +1250,51 @@ function countdown(color) {
 }
 function updMeas() {
   const el = $('eMeas'); if (!el) return;
-  const m = S.meas, mine = m && m.id === S.ek && m.last;
-  document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(mine && m.last === b.dataset.mk)));
-  if (!mine) { el.innerHTML = 'Жмите кнопку в момент смены сигнала. Подъехали на красный — нажмите «Конец красного», когда загорится зелёный, затем «Начало красного», затем снова «Начало зелёного». Есть табло с секундами — впишите число и нажмите цвет. Длительность можно вписать и вручную в поля ниже.'; return; }
-  const now = Date.now();
-  let head;
-  if (now < m.t) {
-    const left = ((m.t - now) / 1000).toFixed(1);
-    head = m.lk === 'g' ? `⏳ горит красный, зелёный через <b>${left} с</b>` : `⏳ горит зелёный, красный через <b>${left} с</b>`;
-  } else {
-    const s = ((now - m.t) / 1000).toFixed(1);
-    const what = { g: 'горит зелёный', y: 'горит жёлтый', r: 'горит красный' }[m.lk];
-    const next = { g: '«Конец зелёного» или «Начало красного»', y: '«Начало красного»', r: '«Начало зелёного»' }[m.lk];
-    head = `⏱ ${what}: <b>${s} с</b> · дальше ${next}`;
+  const m = S.measBy[S.ek], ev = (m && m.ev) || [];
+  document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(ev.length && m.last === b.dataset.mk)));
+  if (!ev.length) { el.innerHTML = 'Жмите кнопку в момент смены сигнала. Подъехали на красный — нажмите «Конец красного», когда загорится зелёный, затем «Начало красного», затем снова «Начало зелёного». Есть табло с секундами — впишите число и нажмите цвет. Длительность можно вписать и вручную в поля ниже.'; return; }
+  const now = Date.now(), d = deriveTiming(ev), cl = d.ev && d.ev.length ? d.ev : ev;
+  const past = cl.filter(e => e.t <= now), lastE = past[past.length - 1], nextE = cl.find(e => e.t > now);
+  let head = '';
+  if (nextE) head = `⏳ ${nextE.k === 'g' ? 'зелёный' : 'красный'} загорится через <b>${((nextE.t - now) / 1000).toFixed(1)} с</b>`;
+  else if (lastE) {
+    const what = { g: 'горит зелёный', y: 'горит жёлтый', r: 'горит красный' }[lastE.k];
+    const next = { g: '«Конец зелёного» или «Начало красного»', y: '«Начало красного»', r: '«Начало зелёного»' }[lastE.k];
+    head = `⏱ ${what}: <b>${((now - lastE.t) / 1000).toFixed(1)} с</b> · дальше ${next}`;
   }
-  const need = [];
-  if (!(parseFloat($('fG').value) > 0)) need.push('зелёный');
-  if (!(parseFloat($('fR').value) > 0)) need.push('красный');
-  if (!m.g) need.push('момент начала зелёного');
   let acc = '';
-  if (m.cyc.length) { const c = avg(m.cyc); acc = ` · цикл <b>${c.toFixed(1)} с</b> по ${m.cyc.length} ${m.cyc.length === 1 ? 'кругу' : 'кругам'}, ±${(0.4 / m.cyc.length).toFixed(2)} с`; }
-  el.innerHTML = head + acc + (need.length ? `<br><span style="color:var(--muted)">Ещё нужно: ${need.join(', ')}</span>` : '<br><span style="color:var(--g)">✓ Тайминг полный и сохранён</span>');
+  if (d.C) acc = ` · цикл <b>${d.C.toFixed(1)} с</b>` + (d.nCyc >= 1 ? ` по ${d.nCyc} ${d.nCyc === 1 ? 'кругу' : d.nCyc < 5 ? 'кругам' : 'кругам'}` : '');
+  const dropped = ev.length - (d.ev ? d.ev.length : ev.length);
+  let tail;
+  if (d.need === 'cycle') tail = '<span style="color:var(--muted)">Ещё нужно: дождаться такого же сигнала на следующем круге — так узнаем длину цикла</span>';
+  else if (d.need === 'g') tail = '<span style="color:var(--muted)">Ещё нужно: момент начала зелёного</span>';
+  else if (d.need === 'r') tail = '<span style="color:var(--muted)">Ещё нужно: момент начала красного (или жёлтого)</span>';
+  else tail = '<span style="color:var(--g)">✓ Тайминг полный и сохранён</span>' + (d.nCyc < 3 ? '<span style="color:var(--muted)"> · каждый следующий круг делает его точнее</span>' : '');
+  if (d.rms > 1.5) tail += `<br><span style="color:var(--r)">⚠ Смены сигнала гуляют на ±${d.rms.toFixed(1)} с — похоже, у светофора меняется режим (адаптивный, вызывная кнопка или другое время суток). Предсказание может ошибаться.</span>`;
+  if (dropped > 0) tail += `<br><span style="color:var(--muted)">Отброшено как ошибки или мерцание: ${dropped}</span>`;
+  el.innerHTML = head + acc + '<br>' + tail;
 }
 function tickEditor() {
   if (S.selected == null) return;
   updMeas();
-  const ph = phase(S.timings[S.ek], Date.now()), el = $('eLive');
+  const ph = phase(S.mine[S.ek] || S.timings[S.ek], Date.now()), el = $('eLive');
   if (!ph) { el.textContent = 'Нет таймингов — заполните поля и сохраните.'; return; }
   const nm = { G: 'ЗЕЛЁНЫЙ', Y: 'ЖЁЛТЫЙ', R: 'КРАСНЫЙ' }[ph.s];
-  el.innerHTML = `Сейчас: <b style="color:var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})">${nm}</b>, переключится через <b>${ph.left.toFixed(1)} с</b> · цикл ${ph.cyc} с`;
+  el.innerHTML = `Сейчас: <b style="color:var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})">${nm}</b>, переключится через <b>${ph.left.toFixed(1)} с</b> · цикл ${r1(ph.cyc)} с`;
 }
 function saveTimings() { try { localStorage.setItem(LS_TIMINGS, JSON.stringify(S.mine)); } catch (e) { toast('Не удалось сохранить на устройстве'); } }
 function saveLight(auto) {
   if (S.selected == null) return;
   let g = parseFloat($('fG').value), y = parseFloat($('fY').value || '0'), r = parseFloat($('fR').value), a = parseClock($('fA').value);
-  if (S.meas && S.meas.id === S.ek && S.meas.g && fmtT(S.meas.g) === $('fA').value.trim()) a = S.meas.g;
+  const fm = S.measBy[S.ek] && S.measBy[S.ek].fit;   // точные значения расчёта (в полях они округлены)
+  if (fm) { if (r1(fm.g) === g) g = fm.g; if (r1(fm.y) === y) y = fm.y; if (r1(fm.r) === r) r = fm.r; if (fmtT(fm.a) === $('fA').value.trim()) a = fm.a; }
+  const prev = S.mine[S.ek];
   if (!(g > 0) || isNaN(r) || r < 0) { toast('Укажите зелёный и красный в секундах'); return; }
   if (a == null) { toast('Отметьте начало зелёного кнопкой или впишите время ЧЧ:ММ:СС'); return; }
   S.timings[S.ek] = S.ek.includes('|') ? { g, y: isNaN(y) ? 0 : y, r, a } : { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
-  saveTimings(); renderLightList(); renderApr(); tickEditor(); draw(); toast(auto ? `Замер сохранён: зелёный ${g} с, жёлтый ${isNaN(y) ? 0 : y} с, красный ${r} с` : (lsGet('kostroma_share_off', '') ? 'Сохранено в «Мои»' : 'Сохранено в «Мои» и отправлено в общую базу'));
+  saveTimings(); renderLightList(); renderApr(); tickEditor(); draw();
+  if (auto && prev && Math.abs(prev.g - g) < 0.3 && Math.abs((prev.y || 0) - y) < 0.3 && Math.abs(prev.r - r) < 0.3) return;   // уточнение без заметных изменений — без лишних сообщений
+  toast(auto ? `Замер сохранён: зелёный ${r1(g)} с, жёлтый ${r1(isNaN(y) ? 0 : y)} с, красный ${r1(r)} с` : (lsGet('kostroma_share_off', '') ? 'Сохранено в «Мои»' : 'Сохранено в «Мои» и отправлено в общую базу'));
   if (S.route) computeRoute();
 }
 function clearLight() { if (S.selected == null) return; delete S.timings[S.ek]; saveTimings(); loadFields(); renderLightList(); if (S.route) computeRoute(); }
@@ -1391,12 +1474,12 @@ function bind() {
     b.addEventListener('pointerdown', e => { if (e.button > 0) return; e.preventDefault(); mark(b.dataset.mk, performance.timeOrigin + e.timeStamp); });
     b.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); mark(b.dataset.mk); } });
   });
-  $('bReset').onclick = () => { S.meas = null; updMeas(); toast('Начат новый замер'); };
+  $('bReset').onclick = () => { delete S.measBy[S.ek]; saveMeas(); updMeas(); toast('Начат новый замер'); };
   document.querySelectorAll('[data-cd]').forEach(b => b.onclick = () => countdown(b.dataset.cd));
   for (const [id, key] of [['fG', 'g'], ['fY', 'y'], ['fR', 'r']]) $(id).addEventListener('change', () => {
     if (S.selected == null) return;
-    const m = getMeas(); m.man[key] = $(id).value.trim() !== '';
-    if (m.g) recompute(m); else updMeas();
+    const m = getMeas(); m.man[key] = $(id).value.trim() !== ''; saveMeas();
+    if (m.ev.length) recompute(m); else updMeas();
   });
   $('bSave').onclick = () => saveLight(false); $('bClear').onclick = clearLight;
   $('bExport').onclick = exportTimings;

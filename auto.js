@@ -164,7 +164,7 @@
   function camStop() {
     preTried = true;
     const det = typeof detectAhead === 'function' ? detectAhead() : null;
-    if (det) { selectLight(det.L.id, false, det.key); startWatch('#' + (det.L.id + 1) + (det.a ? ' ' + det.a.arrow + ' ' + det.a.from : '')); }
+    if (det) { if (typeof pickDet === 'function') pickDet(det); else selectLight(det.L.id, false, det.key); startWatch('#' + (det.L.id + 1) + (det.a ? ' ' + det.a.arrow + ' ' + det.a.from : '')); }
   }
   const near = (L, k) => lock && Math.hypot(lock.x - L.x, lock.y - L.y) < lock.r * (k || 1);
   const diam = L => 1.13 * Math.sqrt(L.a);
@@ -189,14 +189,18 @@
     // 3) новый огонь, а рядом в той же секции погас огонь другого цвета → смена сигнала
     for (const L of lamps) {
       if (L.done || L.gone || L.n < 3) continue;
-      if (t - L.first > 1200) { L.done = true; continue; }
+      if (t - L.first > 2500) { L.done = true; continue; }
       if (L.first - stopInfo.t < 600) { L.done = true; continue; }
+      if (t - L.first < 900) continue;                   // новый цвет должен продержаться почти секунду — иначе это мерцание
       if (lock && !near(L, 1.3)) continue;
       const dl = diam(L);
+      // сколько должен был гореть прежний цвет, чтобы смена считалась настоящей (жёлтый горит 3 с, зелёный и красный — дольше)
+      const minOld = { '1>3': 2000, '3>2': 2000, '2>1': 1500, '3>1': 2000 };
       const old = lamps.find(O => {
         if (!O.gone || O.c === L.c || Math.abs(O.gone - L.first) > 900 || (lock && !near(O, 1.3))) return false;
+        const mo = minOld[O.c + '>' + L.c]; if (!mo || O.gone - O.first < mo) return false;
         const dd = Math.hypot(O.x - L.x, O.y - L.y), dm = Math.max(dl, diam(O));
-        return dd <= 4.5 * dm + 6 && dd >= 0.4 * dm;   // соседняя секция того же светофора
+        return dd <= 4.5 * dm + 6 && dd >= 0.7 * dm;   // соседняя секция того же светофора, а не тот же огонь другим оттенком
       });
       let evt = old && { '1>3': 'gs', '3>2': 'ge', '2>1': 'rs', '3>1': 'rs' }[old.c + '>' + L.c];
       let how = '';
