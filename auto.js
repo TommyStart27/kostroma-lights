@@ -82,7 +82,7 @@
   function startWatch(lbl) {
     stopInfo = { t: nowE(), pos: S.me ? [S.me.x, S.me.y] : null }; watchKey = S.ek; mode = 'watch'; resetWatch();   // огни, накопленные при торможении, сохраняем
     const T = S.timings[S.ek];
-    setS(lbl, T && T.g > 0 && T.r > 0 ? 'Стою — жду смены сигнала, синхронизирую' : 'Стою — жду смены сигнала, замеряю', 1);
+    setS(lbl, T && T.g > 0 && T.r > 0 && !T.part ? 'Стою — жду смены сигнала, синхронизирую' : 'Стою — жду смены сигнала, замеряю', 1);
   }
   // вызывается из app.js при остановке
   function onStop(det) {
@@ -267,7 +267,7 @@
   function fire(evt, t, how) {
     if (S.selected == null) return;
     nEv++;
-    const k = S.ek, T0 = S.timings[k], known = T0 && T0.g > 0 && T0.r > 0 ? { ...T0 } : null;
+    const k = S.ek, T0 = S.timings[k], known = T0 && T0.g > 0 && T0.r > 0 && !T0.part ? { ...T0 } : null;   // недособранный не «синхронизируем» — он ещё считается
     mark(evt, t, true);                                   // точное время события, даже если оно было несколько секунд назад
     const nm = { gs: 'загорелся зелёный', ge: 'загорелся жёлтый', rs: 'загорелся красный' }[evt] + (how ? ' (' + how + ')' : '');
     if (known) {                                          // тайминг уже известен — подправляем точку отсчёта (начало зелёного)

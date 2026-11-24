@@ -825,18 +825,19 @@ function recFor(L, bin, mov, street) {
   const T = S.timings, id = L.id;
   if (bin != null) {
     const a = nearApproach(L, bin, 40);
-    if (a) { if (mov && T[`${id}|${a.k}|${mov}`]) return { T: T[`${id}|${a.k}|${mov}`] }; if (T[`${id}|${a.k}`]) return { T: T[`${id}|${a.k}`] }; }
-    const o = nearApproach(L, bin + 180, 40); if (o && T[`${id}|${o.k}`]) return { T: T[`${id}|${o.k}`] };   // встречное направление — та же фаза
-    if (L.kind === 'X') for (const d of [90, -90]) { const p = nearApproach(L, bin + d, 40); if (p && T[`${id}|${p.k}`]) return { T: T[`${id}|${p.k}`], inv: true }; }
+    if (a) { if (mov && ready(T[`${id}|${a.k}|${mov}`])) return { T: T[`${id}|${a.k}|${mov}`] }; if (ready(T[`${id}|${a.k}`])) return { T: T[`${id}|${a.k}`] }; }
+    if (a) return null;   // у этого подъезда своего готового замера нет — не гадаем по соседним подъездам
   }
-  const t0 = T[id]; if (!t0) return null;
+  const t0 = ready(T[id]); if (!t0) return null;
   const main = t0.main || L.streets[0] || '';
   return { T: t0, inv: L.kind === 'X' && !!street && !!main && street !== main };
 }
 // есть ли у светофора хоть какой-то тайминг — для цвета кружка на карте и в списке
+// «готов» — полный замер; недособранный (оценка, чужой цикл, зеркало без подтверждения) на карте и в маршруте не используется
+const ready = T => T && T.g > 0 && !T.part ? T : null;
 function anyRec(L) {
-  if (S.timings[L.id]) return S.timings[L.id];
-  const p = L.id + '|'; for (const k in S.timings) if (k.startsWith(p)) return S.timings[k];
+  if (ready(S.timings[L.id])) return S.timings[L.id];
+  const p = L.id + '|'; for (const k in S.timings) if (k.startsWith(p) && ready(S.timings[k])) return S.timings[k];
   return null;
 }
 function effPhase(rec, now) { if (!rec) return null; const ph = phase(rec.T, now); if (!ph) return null; return rec.inv ? { ...ph, s: invS(ph.s) } : ph; }
@@ -1113,7 +1114,8 @@ function renderLightList() {
     d.onclick = () => selectLight(L.id, true);
     box.appendChild(d);
   }
-  $('lCount').textContent = `${liveLights().length} объектов, с таймингами: ${Object.keys(S.timings).length}` + (S.my && S.my.add.length ? `, ваших: ${S.my.add.length}` : '') + ' · долгое нажатие на карте — добавить';
+  const keys = Object.keys(S.timings), nr = keys.filter(k => ready(S.timings[k])).length;
+  $('lCount').textContent = `${liveLights().length} объектов, готовых замеров: ${nr}` + (keys.length > nr ? `, собираются: ${keys.length - nr}` : '') + (S.my && S.my.add.length ? `, ваших: ${S.my.add.length}` : '') + ' · долгое нажатие на карте — добавить';
 }
 function parseClock(s) {
   const m = String(s).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/); if (!m) return null;
@@ -1255,7 +1257,8 @@ function deriveTiming(evRaw, extra) {
   const ints = [];
   for (const k of 'gyr') for (let i = 1; i < by[k].length; i++) { const d = by[k][i] - by[k][i - 1]; if (d >= 15 && d <= 900) ints.push(d); }
   let C = null, src = null;
-  if (ints.length) {
+  if (extra.fixC) { C = extra.fixC.C; src = 'hint'; out.hint = extra.fixC.src; out.hintSame = true; }   // цикл всего перекрёстка уже известен по другому подъезду
+  else if (ints.length) {
     let C0 = null, best = -1;
     for (const c of ints) {
       if (c < 35 || c > 150) continue;   // кандидат — один круг; длинные интервалы учитываются как кратные
@@ -1283,22 +1286,22 @@ function deriveTiming(evRaw, extra) {
   }
   // 2) цикл по разным проездам (только начала зелёного — их видно почти при каждой остановке)
   const wmx = Math.max(0, ...(extra.obs || []).filter(o => o.c === 'R').map(o => (o.t2 - o.t1) / 1000).filter(w => w < 200));
-  const long = fitCycleLong(by.g, 1.2, wmx ? wmx + YDEF + 4 : 0);
+  const long = extra.fixC ? null : fitCycleLong(by.g, 1.2, wmx ? wmx + YDEF + 4 : 0);
   if (long && (!C || Math.abs(long.C - C) < 1)) { C = long.C; src = 'passes'; }
-  else if (C && !long && by.g.length >= 3) { const rs = refineSeed(by.g, C, 1.2); if (rs) { C = rs.C; src = 'passes'; } }
+  else if (C && !long && !extra.fixC && by.g.length >= 3) { const rs = refineSeed(by.g, C, 1.2); if (rs) { C = rs.C; src = 'passes'; } }
   // 3) цикл у других направлений этого перекрёстка или у соседей по улице (обычно общий — «зелёная волна»)
   if (!C && extra.hints) {
     for (const h of extra.hints) {
       let fits = true;
       // каждый промежуток между началами зелёного должен быть целым числом кругов (с небольшим запасом на часы)
       for (let i = 1; i < by.g.length; i++) { const d = by.g[i] - by.g[i - 1]; if (d < 5) continue; const n = Math.round(d / h.C); if (n < 1 || Math.abs(d - n * h.C) > 1.5 + d * 0.00002) { fits = false; break; } }
-      if (fits) { C = h.C; src = 'hint'; out.hint = h.src; break; }
+      if (fits) { C = h.C; src = 'hint'; out.hint = h.src; out.hintSame = !!h.same; break; }
     }
   }
   if (!C) return out;
   out.C = C; out.src = src; out.need = null;
   // 4) фазы: при надёжном цикле — по всем событиям, иначе по последним 30 минутам
-  const win = src === 'passes' ? Infinity : src === 'stop' ? 6 * 3600 : 1800;
+  const win = extra.fixC ? extra.fixC.win : src === 'passes' ? Infinity : src === 'stop' ? 6 * 3600 : 1800;
   const ph = {}, res = [];
   for (const k of 'gyr') {
     const arr = by[k].filter(t => tl - t <= win); if (!arr.length) continue;
@@ -1341,11 +1344,11 @@ function deriveTiming(evRaw, extra) {
 }
 // поля и сохранение (вписанное вручную не перезаписывается)
 function recompute(m) {
-  const man = m.man || {}, d = deriveTiming(m.ev, { obs: m.obs, hints: cycleHints(S.selected, S.ek) });
+  const man = m.man || {}, R = deriveKey(S.selected, S.ek), d = R.d;
   m.res = d;
-  if (d.g == null && d.need === 'cycle' && S.mine[S.ek] && S.mine[S.ek].via === 'hint') {
+  if (d.g == null && d.need === 'cycle' && S.mine[S.ek] && S.mine[S.ek].auto && S.mine[S.ek].part) {
     delete S.timings[S.ek]; delete m.fit; saveTimings(); loadFields(); renderLightList(); draw();
-    toast('Цикл соседа не подошёл к новым замерам — тайминг убран, ждём ещё проездов');
+    toast('Прежний расчёт не сошёлся с новыми отметками — тайминг убран, ждём ещё проездов');
   }
   if (d.g != null) {
     let { g, y, r } = d;
@@ -1356,16 +1359,77 @@ function recompute(m) {
     if (!man.g) $('fG').value = r1(g); if (!man.y) $('fY').value = r1(y); if (!man.r) $('fR').value = r1(r);
     $('fA').value = fmtT(d.a);
     m.fit = { g, y, r, a: d.a, est: !!d.est };
-    if (g > 0 && r > 0) { saveLight(true); if (S.mine[S.ek]) { if (d.src === 'hint') S.mine[S.ek].via = 'hint'; else delete S.mine[S.ek].via; saveTimings(); } }
+    if (g > 0 && r > 0) saveLight(true, autoFlags(R));
   }
+  try { updateRelated(S.selected, S.ek); } catch (e) { console.warn(e); }
   updMeas();
+}
+// Зеркало: пока у поперечного подъезда красный — у нас зелёный, и наоборот; у встречного — та же фаза.
+// Между фазами у всех красный ~AR с, а перед красным горит жёлтый.
+const AR = 2;
+function mirrorData(id, key) {
+  const out = { ev: [], obs: [], n: 0 }, L = S.lights[id], ps = String(key).split('|');
+  if (!L || L.kind !== 'X' || ps.length !== 2) return out;
+  const ap = approaches(L), me = ap.find(a => a.k === ps[1]); if (!me) return out;
+  for (const a of ap) {
+    if (a.k === me.k) continue;
+    const m = S.measBy[`${id}|${a.k}`]; if (!m || !m.ev || !m.ev.length) continue;
+    const dg = Math.abs(angD(a.b, me.b)), cross = dg >= 60 && dg <= 120, opp = dg >= 150; if (!cross && !opp) continue;
+    const ev = cleanEvents(m.ev); out.n++;
+    const sd = deriveTiming(m.ev, { obs: m.obs }); if ((sd.src === 'stop' || sd.src === 'passes') && (!out.fix || ev.length > out.fix.n)) out.fix = { C: sd.C, win: sd.src === 'passes' ? Infinity : 6 * 3600, n: ev.length, src: 'другой подъезд этого перекрёстка' };
+    for (let i = 0; i < ev.length; i++) {
+      const e = ev[i];
+      if (opp) { out.ev.push({ t: e.t, k: e.k, m: 1 }); continue; }
+      if (e.k === 'g') out.ev.push({ t: e.t - AR * 1000, k: 'r', m: 1 });
+      else if (e.k === 'r') out.ev.push({ t: e.t + AR * 1000, k: 'g', m: 1 });
+      else { const nx = ev[i + 1]; if (!(nx && nx.k === 'r' && nx.t - e.t < 6000)) out.ev.push({ t: e.t + (YDEF + AR) * 1000, k: 'g', m: 1 }); }
+    }
+    for (const o of m.obs || []) {
+      if (opp) out.obs.push(o);
+      else if (o.c === 'R' && o.t2 - o.t1 > 4000) out.obs.push({ c: 'G', t1: o.t1, t2: o.t1 });   // там стояли на красном — здесь в это время зелёный
+    }
+  }
+  return out;
+}
+// тайминг подъезда: сначала по своим отметкам; не хватает — вместе с зеркальными.
+// full — замер готов: цикл надёжен, обе смены сигнала увидены (не оценка), а зеркальный ещё и подтверждён своей отметкой
+function deriveKey(id, key) {
+  const m = S.measBy[key] || { ev: [], obs: [] }, hints = cycleHints(id, key), obs = m.obs || [];
+  const isFull = d => d.g != null && !d.est && (d.src !== 'hint' || d.hintSame);
+  const own = deriveTiming(m.ev, { obs, hints });
+  const pack = (d, via, conf) => ({ d, via, conf, full: isFull(d) && (via !== 'mirror' || conf), cs: d.src === 'stop' || d.src === 'passes' || (d.src === 'hint' && d.hintSame) });
+  if (isFull(own)) return pack(own, null, true);
+  const mi = mirrorData(id, key);
+  if (!mi.ev.length) return pack(own, null, true);
+  const all = deriveTiming(m.ev.concat(mi.ev), { obs: obs.concat(mi.obs), hints, fixC: mi.fix });
+  if (all.g == null) return pack(own, null, true);
+  // подтверждение: хотя бы одна своя смена сигнала легла на расчёт (±3 с)
+  const C = all.C, a = all.a / 1000, b = { g: 0, y: all.g, r: all.g + all.y };
+  const conf = cleanEvents(m.ev).some(e => { const off = (((e.t / 1000 - a - b[e.k]) % C) + C) % C; return Math.min(off, C - off) <= 3; });
+  all.mirror = { n: mi.n, conf };
+  return pack(all, 'mirror', conf);
+}
+function autoFlags(R) { const f = { auto: 1 }; if (!R.full) f.part = 1; if (R.d.est) f.est = 1; if (R.cs) f.cs = 1; if (R.via) f.via = R.via; return f; }
+// пересчитать соседние подъезды этого перекрёстка (для них наши отметки — зеркальные)
+function updateRelated(id, key) {
+  const L = S.lights[id]; if (!L || L.kind !== 'X') return;
+  let ch = false;
+  for (const a of approaches(L)) {
+    const k = `${id}|${a.k}`; if (k === key) continue;
+    const prev = S.mine[k]; if (prev && !prev.auto) continue;      // введённое вручную не трогаем
+    const R = deriveKey(id, k), d = R.d;
+    if (d.g == null || !(d.r > 0)) { if (prev && prev.part) { delete S.mine[k]; ch = true; } continue; }
+    if (prev && !prev.part && R.via === 'mirror' && !R.full) continue;   // готовый замер не заменяем недособранным
+    S.timings[k] = Object.assign({ g: d.g, y: d.y, r: d.r, a: d.a }, autoFlags(R)); ch = true;
+  }
+  if (ch) saveTimings();
 }
 // подсказки цикла: другие направления этого перекрёстка, затем соседние светофоры на той же улице (до 1,5 км)
 function cycleHints(id, key) {
   const out = [], L = S.lights[id]; if (!L) return out;
-  const cyc = T => T && T.g > 0 && T.r > 0 ? T.g + (T.y || 0) + T.r : null;   // цикл известен, даже если красный — по оценке
+  const cyc = T => T && T.g > 0 && T.r > 0 && (!T.part || T.cs) ? T.g + (T.y || 0) + T.r : null;   // цикл надёжен, даже если красный — по оценке
   for (const src of [S.mine, S.shared]) for (const [k, T] of Object.entries(src)) {
-    if (parseInt(k) !== id || k === key) continue; const c = cyc(T); if (c) out.push({ C: c, src: 'другое направление этого перекрёстка' });
+    if (parseInt(k) !== id || k === key) continue; const c = cyc(T); if (c) out.push({ C: c, src: 'другое направление этого перекрёстка', same: true });
   }
   const near = [];
   for (const M of liveLights()) {
@@ -1391,8 +1455,10 @@ function updMeas() {
   const el = $('eMeas'); if (!el) return;
   const m = S.measBy[S.ek], ev = (m && m.ev) || [];
   document.querySelectorAll('[data-mk]').forEach(b => b.classList.toggle('last', !!(ev.length && m.last === b.dataset.mk)));
+  const R = deriveKey(S.selected, S.ek), d = R.d;
+  if (!ev.length && d.g != null) { el.innerHTML = `По отметкам на поперечных и встречных подъездах этого перекрёстка: цикл <b>${d.C.toFixed(1)} с</b>, зелёный ≈ <b>${d.g.toFixed(0)} с</b>, красный ≈ <b>${d.r.toFixed(0)} с</b>.<br><span style="color:var(--muted)">Собирается — на карте пока не показывается. Нужна одна своя отметка с этого подъезда (например, остановка на красном до зелёного), чтобы проверить, что здесь всё действительно «наоборот».</span>`; return; }
   if (!ev.length) { el.innerHTML = 'Жмите кнопку в момент смены сигнала. Подъехали на красный — нажмите «Конец красного», когда загорится зелёный, затем «Начало красного», затем снова «Начало зелёного». Есть табло с секундами — впишите число и нажмите цвет. Длительность можно вписать и вручную в поля ниже.'; return; }
-  const now = Date.now(), d = deriveTiming(ev, { obs: m.obs, hints: cycleHints(S.selected, S.ek) }), cl = d.ev && d.ev.length ? d.ev : ev;
+  const now = Date.now(), cl = cleanEvents(ev);
   const past = cl.filter(e => e.t <= now), lastE = past[past.length - 1], nextE = cl.find(e => e.t > now);
   let head = '';
   if (nextE) head = `⏳ ${nextE.k === 'g' ? 'зелёный' : 'красный'} загорится через <b>${((nextE.t - now) / 1000).toFixed(1)} с</b>`;
@@ -1405,12 +1471,20 @@ function updMeas() {
   let acc = '';
   if (d.C) acc = ` · цикл <b>${d.C.toFixed(1)} с</b>` + (d.src === 'passes' ? ` по ${d.nPass} проездам` : d.src === 'hint' ? ` (взят: ${d.hint})` : d.nCyc >= 1 ? ` по ${d.nCyc} ${d.nCyc === 1 ? 'кругу' : 'кругам'}` : '');
   if (d.est) acc += `<br>красный ≈ <b>${d.r.toFixed(0)} с</b>, зелёный ≈ <b>${d.g.toFixed(0)} с</b> — оценка по ${d.est.n} ожид. на красном` + (d.est.np ? ` и ${d.est.np} проездам на зелёный` : '') + `; станет точной, когда камера увидит, как загорается красный или жёлтый`;
-  const dropped = ev.length - (d.ev ? d.ev.length : ev.length);
+  const dropped = ev.length - cl.length;
   let tail;
   if (d.need === 'cycle') tail = '<span style="color:var(--muted)">Ещё нужно: длина цикла — дождитесь следующего такого же сигнала, или она сложится из нескольких проездов (обычно 4–5 остановок), или возьмётся у соседнего замеренного светофора на этой улице</span>';
   else if (d.need === 'g') tail = '<span style="color:var(--muted)">Ещё нужно: момент начала зелёного</span>';
   else if (d.need === 'r') tail = '<span style="color:var(--muted)">Ещё нужно: начало красного (или жёлтого) — либо хотя бы одна остановка на красном до зелёного</span>';
-  else tail = (d.est ? '<span style="color:var(--g)">✓ Тайминг сохранён (красный — по оценке)</span>' : '<span style="color:var(--g)">✓ Тайминг полный и сохранён</span>') + (d.nCyc < 3 ? '<span style="color:var(--muted)"> · каждый следующий круг делает его точнее</span>' : '');
+  else if (R.full) tail = '<span style="color:var(--g)">✓ Посчитан полностью — показывается на карте и учитывается в маршрутах</span>' + (d.via === 'mirror' || R.via === 'mirror' ? '<span style="color:var(--muted)"> · с учётом отметок на других подъездах</span>' : '') + (d.nCyc < 3 ? '<span style="color:var(--muted)"> · каждый следующий круг делает его точнее</span>' : '');
+  else {
+    const why = [];
+    if (d.est) why.push('увидеть, как загорается красный или жёлтый (сейчас красный — по оценке)');
+    if (d.src === 'hint' && !d.hintSame) why.push('свой цикл: ещё несколько остановок здесь (сейчас цикл взят у соседа)');
+    if (R.via === 'mirror' && !R.conf) why.push('своя отметка с этого подъезда, совпавшая с расчётом по другим подъездам');
+    tail = '<span style="color:var(--y)">◐ Собирается — на карте пока не показывается.</span><span style="color:var(--muted)"> Ещё нужно: ' + (why.join('; ') || 'ещё отметок') + '</span>';
+  }
+  if (R.via === 'mirror') acc += `<br><span style="color:var(--muted)">Учтены отметки других подъездов этого перекрёстка (${d.mirror.n}): у поперечных всё наоборот, у встречных — так же${R.conf ? ', своя отметка совпала ✓' : ''}</span>`;
   if (d.rms > 1.5) tail += `<br><span style="color:var(--r)">⚠ Смены сигнала гуляют на ±${d.rms.toFixed(1)} с — похоже, у светофора меняется режим (адаптивный, вызывная кнопка или другое время суток). Предсказание может ошибаться.</span>`;
   if (dropped > 0) tail += `<br><span style="color:var(--muted)">Отброшено как ошибки или мерцание: ${dropped}</span>`;
   el.innerHTML = head + acc + '<br>' + tail;
@@ -1420,11 +1494,11 @@ function tickEditor() {
   updMeas();
   const ph = phase(S.mine[S.ek] || S.timings[S.ek], Date.now()), el = $('eLive');
   if (!ph) { el.textContent = 'Нет таймингов — заполните поля и сохраните.'; return; }
-  const nm = { G: 'ЗЕЛЁНЫЙ', Y: 'ЖЁЛТЫЙ', R: 'КРАСНЫЙ' }[ph.s];
-  el.innerHTML = `Сейчас: <b style="color:var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})">${nm}</b>, переключится через <b>${ph.left.toFixed(1)} с</b> · цикл ${r1(ph.cyc)} с`;
+  const nm = { G: 'ЗЕЛЁНЫЙ', Y: 'ЖЁЛТЫЙ', R: 'КРАСНЫЙ' }[ph.s], part = (S.mine[S.ek] || S.timings[S.ek] || {}).part;
+  el.innerHTML = `${part ? 'Предварительно' : 'Сейчас'}: <b style="color:var(${ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'})">${nm}</b>, переключится через <b>${ph.left.toFixed(1)} с</b> · цикл ${r1(ph.cyc)} с` + (part ? ' <span style="color:var(--muted)">(собирается — на карте не показывается)</span>' : '');
 }
 function saveTimings() { try { localStorage.setItem(LS_TIMINGS, JSON.stringify(S.mine)); } catch (e) { toast('Не удалось сохранить на устройстве'); } }
-function saveLight(auto) {
+function saveLight(auto, flags) {
   if (S.selected == null) return;
   let g = parseFloat($('fG').value), y = parseFloat($('fY').value || '0'), r = parseFloat($('fR').value), a = parseClock($('fA').value);
   const fm = S.measBy[S.ek] && S.measBy[S.ek].fit;   // точные значения расчёта (в полях они округлены)
@@ -1432,9 +1506,12 @@ function saveLight(auto) {
   const prev = S.mine[S.ek];
   if (!(g > 0) || isNaN(r) || r < 0) { toast('Укажите зелёный и красный в секундах'); return; }
   if (a == null) { toast('Отметьте начало зелёного кнопкой или впишите время ЧЧ:ММ:СС'); return; }
-  S.timings[S.ek] = S.ek.includes('|') ? { g, y: isNaN(y) ? 0 : y, r, a } : { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
-  if (auto && fm && fm.est) S.mine[S.ek].est = 1; else if (S.mine[S.ek]) delete S.mine[S.ek].est;
+  const T = S.ek.includes('|') ? { g, y: isNaN(y) ? 0 : y, r, a } : { g, y: isNaN(y) ? 0 : y, r, a, main: $('fMain').value };
+  if (auto && flags) Object.assign(T, flags);           // расчёт по отметкам: помечаем, готов ли замер
+  S.timings[S.ek] = T;                                  // ручной ввод (без флагов) — всегда готов
   saveTimings(); renderLightList(); renderApr(); tickEditor(); draw();
+  if (auto && T.part) return;   // недособранный — без сообщений, о нём пишет окно замера
+  if (auto && prev && prev.part) { toast(`✓ Светофор посчитан полностью — теперь он на карте: зелёный ${r1(g)} с, жёлтый ${r1(isNaN(y) ? 0 : y)} с, красный ${r1(r)} с`); if (S.route) computeRoute(); return; }
   if (auto && prev && Math.abs(prev.g - g) < 0.3 && Math.abs((prev.y || 0) - y) < 0.3 && Math.abs(prev.r - r) < 0.3) return;   // уточнение без заметных изменений — без лишних сообщений
   toast(auto ? `Замер сохранён: зелёный ${r1(g)} с, жёлтый ${r1(isNaN(y) ? 0 : y)} с, красный ${r1(r)} с` : (lsGet('kostroma_share_off', '') ? 'Сохранено в «Мои»' : 'Сохранено в «Мои» и отправлено в общую базу'));
   if (S.route) computeRoute();
@@ -1486,7 +1563,7 @@ let shareQ = {}; try { shareQ = JSON.parse(lsGet(LS_SHQ, '{}')) || {}; } catch (
 let shareTimer = 0;
 function shareQueue(k, v, prev) {
   if (lsGet('kostroma_share_off', '') || !KEY_RE.test(k) || parseInt(k) >= LIGHTS_BASE.length) return;   // свои добавленные светофоры пока только локально
-  if (!v || !(v.g > 0) || !(v.r > 0) || v.a == null) return;
+  if (!v || !(v.g > 0) || !(v.r > 0) || v.a == null || v.part) return;   // в общую базу — только готовые замеры
   const sync = prev && prev.g === v.g && prev.r === v.r && (prev.y || 0) === (v.y || 0);
   shareQ[k] = { key: k, g: +(+v.g).toFixed(2), y: +(+(v.y || 0)).toFixed(2), r: +(+v.r).toFixed(2), a: Math.round(v.a), src: sync ? 'sync' : 'manual' };
   lsSet(LS_SHQ, JSON.stringify(shareQ));
