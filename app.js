@@ -277,6 +277,7 @@ function phase(T, now) {
 }
 // ожидание у светофора L в момент tMs: bin — направление въезда, mov — манёвр (L/S/R), street — улица въезда
 function waitAt(L, tMs, bin, mov, street) {
+  if (noLightFrom(L, bin)) return { wait: 0, known: true, s: 'G' };   // с этой стороны светофора нет
   const rec = recFor(L, bin, mov, street);
   const ph = rec && phase(rec.T, tMs);
   if (!ph) return { wait: DEFAULT_WAIT[L.kind] || 12, known: false, s: null };
@@ -840,7 +841,12 @@ const FROM = ['с юга', 'с юго-запада', 'с запада', 'с се
 const MOV = { '': 'Все сигналы', L: '← налево', S: '↑ прямо', R: '→ направо' };
 const angD = (a, b) => { let d = (b - a) % 360; if (d > 180) d -= 360; if (d < -180) d += 360; return d; };
 const bearXY = (x0, y0, x1, y1) => (Math.atan2(x1 - x0, y1 - y0) * 180 / Math.PI + 360) % 360;
-function approaches(L) {
+// направления без своего светофора (например, второстепенный выезд) можно убрать — хранится в «Моих светофорах»
+const hiddenApr = L => (S.my && S.my.hide && S.my.hide[L.id]) || [];
+function approaches(L) { const all = approachesAll(L), h = hiddenApr(L); return h.length ? all.filter(a => !h.includes(a.k)) : all; }
+// въезд с этого направления без светофора? (направление убрано пользователем)
+function noLightFrom(L, bin) { const h = hiddenApr(L); if (!h.length || bin == null) return false; let best = null, bd = 40; for (const a of approachesAll(L)) { const d = Math.abs(angD(a.b, bin)); if (d < bd) { bd = d; best = a; } } return !!best && h.includes(best.k); }
+function approachesAll(L) {
   const g = S.graph; if (!g || !L) return [];
   if (L._ag === g && L._acl === g.cl) return L._ap;
   const raw = [], k0 = Math.floor(L.x / g.G), k1 = Math.floor(L.y / g.G);
@@ -904,7 +910,10 @@ function renderApr() {
   const chip = (txt, on, fn, has, title) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'chip' + (on ? ' on' : '') + (has ? ' has' : ''); b.textContent = txt; if (title) b.title = title; b.onclick = fn; return b; };
   box.appendChild(chip('Весь перекрёсток', !bk, () => setEk(String(L.id)), !!S.timings[L.id], 'Один сигнал на всё — если не знаете направление'));
   for (const a of ap) box.appendChild(chip(`${a.arrow} ${a.from}${a.name ? ' · ' + a.name : ''}`, bk === a.k, () => setEk(`${L.id}|${a.k}`), Object.keys(S.timings).some(k => k === `${L.id}|${a.k}` || k.startsWith(`${L.id}|${a.k}|`)), 'Едете ' + a.arrow + ', подъезжаете ' + a.from));
-  $('eAprHint').hidden = !ap.length;
+  if (bk && ap.some(a => a.k === bk)) { const b = chip('✕ Здесь нет светофора', false, () => hideApproach(L, bk), false, 'Убрать это направление: с этой стороны светофора нет'); b.classList.add('del'); box.appendChild(b); }
+  const nh = hiddenApr(L).length;
+  if (nh) box.appendChild(chip(`↺ Вернуть убранные (${nh})`, false, () => showApproaches(L), false, 'Показать снова убранные направления'));
+  $('eAprHint').hidden = !ap.length && !nh;
   mb.hidden = !bk;
   if (bk) for (const m of ['', 'L', 'S', 'R']) mb.appendChild(chip(MOV[m], (mv || '') === m, () => setEk(`${L.id}|${bk}` + (m ? '|' + m : '')), !!S.timings[`${L.id}|${bk}` + (m ? '|' + m : '')], m ? 'Отдельная секция-стрелка со своим сигналом' : 'Основной сигнал этого подъезда'));
 }
@@ -948,6 +957,7 @@ function detectAhead() {
     const d = Math.hypot(L.x - c.x, L.y - c.y); if (d >= bd) continue;
     if (hd != null && d > 14 && Math.abs(angD(hd, bearXY(c.x, c.y, L.x, L.y))) > 50) continue;   // светофор сбоку или позади
     if (hd == null && d > 35) continue;
+    if (noLightFrom(L, hd)) continue;   // с нашей стороны у этого перекрёстка светофора нет
     bd = d; best = L;
   }
   if (!best) return null;
@@ -968,7 +978,7 @@ function passCheck(p) {
   for (const L of liveLights()) {
     if (Math.abs(L.x - p.x) > 20 || Math.abs(L.y - p.y) > 20 || Math.hypot(L.x - p.x, L.y - p.y) > 20) continue;
     S.lastPass = S.lastPass || {}; if (S.lastPass[L.id] && p.t - S.lastPass[L.id] < 120000) continue;
-    const hd = headingNow(); if (hd == null) continue;
+    const hd = headingNow(); if (hd == null || noLightFrom(L, hd)) continue;
     S.lastPass[L.id] = p.t;
     const a = nearApproach(L, hd, 45), key = a ? `${L.id}|${a.k}` : String(L.id);
     const m = S.measBy[key] || (S.measBy[key] = { ev: [], obs: [], man: {} }); m.obs = m.obs || [];
@@ -1000,12 +1010,12 @@ function checkStop() {
 const LS_MY = 'kostroma_mylights_v1';
 const liveLights = () => S.lights.filter(L => !L.off);
 function loadMy() {
-  let m = { add: [], del: [] };
+  let m = { add: [], del: [], hide: {} };
   try { m = Object.assign(m, JSON.parse(localStorage.getItem(LS_MY) || '{}')); } catch (e) {}
   applyMy(m);
 }
 function applyMy(m) {
-  S.my = { add: m.add || [], del: m.del || [] };
+  S.my = { add: m.add || [], del: m.del || [], hide: m.hide || {} };
   S.lights.length = LIGHTS_BASE.length;
   for (const L of S.lights) L.off = false;
   for (const a of S.my.add.slice().sort((p, q) => p.id - q.id)) {
@@ -1045,15 +1055,24 @@ function removeLight(i) {
     const T = {}; for (const [k, v] of Object.entries(S.mine)) { const n = parseInt(k), rest = String(k).slice(String(n).length); if (n < i) T[k] = v; else if (n > i) T[(n - 1) + rest] = v; }
     S.mine = T; saveTimings();
     S.my.add = S.my.add.filter(a => a.id !== i);
+    const H = {}; for (const [k, v] of Object.entries(S.my.hide || {})) { const n = +k; if (n < i) H[n] = v; else if (n > i) H[n - 1] = v; } S.my.hide = H;
   } else if (!S.my.del.includes(i)) S.my.del.push(i);
   applyMy(S.my);
   S.selected = null; $('editor').hidden = true; hideAsk();
   saveMy(); toast('Светофор убран с карты');
 }
 function restoreRemoved() { const n = S.my.del.length; S.my.del = []; applyMy(S.my); saveMy(); toast('Возвращено светофоров: ' + n); }
+function hideApproach(L, k) {
+  const h = S.my.hide[L.id] = S.my.hide[L.id] || []; if (!h.includes(k)) h.push(k);
+  if (S.ek.split('|')[1] === k) S.ek = String(L.id);
+  saveMy(); renderApr(); loadFields();
+  toast('Направление убрано: с этой стороны светофора нет. Вернуть — кнопкой «↺» в списке направлений');
+}
+function showApproaches(L) { const n = hiddenApr(L).length; delete S.my.hide[L.id]; saveMy(); renderApr(); toast('Возвращено направлений: ' + n); }
 function renderMyInfo() {
   const el = $('myInfo'); if (!el) return;
-  el.textContent = `Добавлено вами: ${S.my.add.length}, убрано: ${S.my.del.length}.`;
+  const nh = Object.values(S.my.hide || {}).reduce((s, v) => s + v.length, 0);
+  el.textContent = `Добавлено вами: ${S.my.add.length}, убрано: ${S.my.del.length}` + (nh ? `, убрано направлений: ${nh}` : '') + '.';
   $('bRestore').hidden = !S.my.del.length;
 }
 // карточка-вопрос внизу карты
@@ -1567,7 +1586,7 @@ function saveLight(auto, flags) {
 }
 function clearLight() { if (S.selected == null) return; delete S.timings[S.ek]; saveTimings(); loadFields(); renderLightList(); if (S.route) computeRoute(); }
 function exportTimings() {
-  const out = { app: 'kostroma-lights', v: 1, saved: new Date().toISOString(), my_lights: S.my.add.map(a => ({ id: a.id + 1, kind: a.kind, name: a.name, x: a.x, y: a.y, lat: +toLL(a.x, a.y)[0].toFixed(6), lon: +toLL(a.x, a.y)[1].toFixed(6) })), removed: S.my.del.map(i => i + 1), lights: Object.entries(S.mine).filter(([k]) => S.lights[parseInt(k)]).map(([k, T]) => ({ id: parseInt(k) + 1, key: k, direction: keyLabel(k), name: S.lights[parseInt(k)].name, x: Math.round(S.lights[parseInt(k)].x), y: Math.round(S.lights[parseInt(k)].y), green: T.g, yellow: T.y, red: T.r, green_at: fmtT(T.a), green_at_ms: T.a, main: T.main })) };
+  const out = { app: 'kostroma-lights', v: 1, saved: new Date().toISOString(), my_lights: S.my.add.map(a => ({ id: a.id + 1, kind: a.kind, name: a.name, x: a.x, y: a.y, lat: +toLL(a.x, a.y)[0].toFixed(6), lon: +toLL(a.x, a.y)[1].toFixed(6) })), removed: S.my.del.map(i => i + 1), hidden_directions: Object.fromEntries(Object.entries(S.my.hide || {}).map(([k, v]) => [+k + 1, v])), lights: Object.entries(S.mine).filter(([k]) => S.lights[parseInt(k)]).map(([k, T]) => ({ id: parseInt(k) + 1, key: k, direction: keyLabel(k), name: S.lights[parseInt(k)].name, x: Math.round(S.lights[parseInt(k)].x), y: Math.round(S.lights[parseInt(k)].y), green: T.g, yellow: T.y, red: T.r, green_at: fmtT(T.a), green_at_ms: T.a, main: T.main })) };
   const blob = new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'светофоры-кострома.json'; document.body.appendChild(a); a.click(); a.remove();
   toast('Файл с таймингами сохранён');
@@ -1577,7 +1596,7 @@ function importTimings(file) {
   fr.onload = () => {
     try {
       const j = JSON.parse(fr.result); let n = 0;
-      if (j.my_lights || j.removed) { applyMy({ add: (j.my_lights || []).map(a => ({ id: a.id - 1, x: a.x, y: a.y, kind: a.kind === 'P' ? 'P' : 'X', name: a.name || '' })), del: (j.removed || []).map(i => i - 1) }); saveMy(); }
+      if (j.my_lights || j.removed || j.hidden_directions) { applyMy({ add: (j.my_lights || []).map(a => ({ id: a.id - 1, x: a.x, y: a.y, kind: a.kind === 'P' ? 'P' : 'X', name: a.name || '' })), del: (j.removed || []).map(i => i - 1), hide: Object.fromEntries(Object.entries(j.hidden_directions || {}).map(([k, v]) => [+k - 1, v])) }); saveMy(); }
       for (const l of j.lights || []) { const i = l.id - 1; if (!S.lights[i]) continue; S.timings[l.key && parseInt(l.key) === i ? l.key : i] = { g: +l.green, y: +l.yellow || 0, r: +l.red, a: l.green_at_ms || parseClock(l.green_at), main: l.main }; n++; }
       saveTimings(); renderLightList(); draw(); toast('Загружено таймингов: ' + n);
     } catch (e) { toast('Файл не похож на файл таймингов'); }
