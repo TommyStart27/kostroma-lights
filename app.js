@@ -369,8 +369,33 @@ function fitAll() {
   S.view.s = Math.min(W / (maxx - minx + 1500), H / (maxy - miny + 1500));
 }
 // экранные позиции треугольников-подъездов вокруг светофора
+// подъезды на экране: светофор-«столбик» стоит перед перекрёстком справа по ходу движения (как в жизни),
+// стрелка у края перекрёстка показывает, куда едут те, для кого он горит
 function aprScreen(L, x, y, r) {
-  return approaches(L).map(a => { const rad = a.b * Math.PI / 180, ux = Math.sin(rad), uy = -Math.cos(rad), dd = r + 12; return { a, ux, uy, cx0: x - ux * dd, cy0: y - uy * dd }; });
+  const z = sigSize(r);
+  return approaches(L).map(a => {
+    const rad = a.b * Math.PI / 180, ux = Math.sin(rad), uy = -Math.cos(rad), dd = r + 7 + z * 1.8, sd = z * 1.5;
+    return { a, ux, uy, z, cx0: x - ux * dd - uy * sd, cy0: y - uy * dd + ux * sd, ax: x - ux * (r + 4), ay: y - uy * (r + 4) };
+  });
+}
+const sigSize = r => Math.max(3, r * 0.62) * Math.max(1, Math.min(1.8, S.view.s / 0.8));   // при приближении светофорчики крупнее
+const sigCol = s => css(s === 'G' ? '--g' : s === 'Y' ? '--y' : s === 'R' ? '--r' : '--none');
+// маленький светофор: корпус и три лампы, горит та, что сейчас; неизвестно — все тёмные
+function drawSignal(cx, cy, z, s, sel) {
+  const w = z * 1.25, h = z * 3.3, dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(cx - w / 2, cy - h / 2, w, h, z * 0.5) : ctx.rect(cx - w / 2, cy - h / 2, w, h);
+  ctx.fillStyle = s ? (dark ? '#0d0e10' : '#26282c') : (dark ? '#3a3c40' : '#bdbab2'); ctx.fill();
+  ctx.lineWidth = sel ? 2 : 1; ctx.strokeStyle = sel ? css('--accent') : css('--panel'); ctx.stroke();
+  const lamps = [['R', -1], ['Y', 0], ['G', 1]];
+  for (const [k, o] of lamps) {
+    ctx.beginPath(); ctx.arc(cx, cy + o * z * 1.05, z * 0.42, 0, 7);
+    if (s === k) { ctx.fillStyle = sigCol(k); ctx.fill(); }
+    else { ctx.fillStyle = s ? (dark ? '#2a2c30' : '#45474c') : (dark ? '#55575c' : '#d9d6cf'); ctx.fill(); }
+  }
+}
+function drawArrowHead(x, y, ux, uy, z, col) {
+  ctx.beginPath(); ctx.moveTo(x + ux * z, y + uy * z); ctx.lineTo(x - ux * z * .6 - uy * z * .75, y - uy * z * .6 + ux * z * .75); ctx.lineTo(x - ux * z * .6 + uy * z * .75, y - uy * z * .6 - ux * z * .75); ctx.closePath();
+  ctx.fillStyle = col; ctx.fill();
 }
 function pathPts(pts) { ctx.moveTo(sx(pts[0][0]), sy(pts[0][1])); for (let i = 1; i < pts.length; i++) ctx.lineTo(sx(pts[i][0]), sy(pts[i][1])); }
 function visible(pts) { // грубая отсечка по рамке
@@ -425,23 +450,47 @@ function render() {
   // светофоры
   const now = Date.now(), showNum = s > 0.2;
   for (const L of liveLights()) {
-    const x = sx(L.x), y = sy(L.y); if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
-    const ph = phase(anyRec(L), now);
-    const r = (L.kind === 'X' ? 6.5 : 4.5) * Math.max(0.85, Math.min(1.7, k));
-    if (s > 0.45 && S.graph) for (const q of aprScreen(L, x, y, r)) {   // подъезды: треугольник со стороны, откуда едут машины, цвет — их сигнал
-      const { a, cx0, cy0, ux, uy } = q, ep = effPhase(recFor(L, a.b, '', a.name), now), sel = L.id === S.selected && S.ek && S.ek.split('|')[1] === a.k, z = sel ? 8 : 6;
-      ctx.beginPath(); ctx.moveTo(cx0 + ux * z, cy0 + uy * z); ctx.lineTo(cx0 - ux * z * .7 - uy * z * .8, cy0 - uy * z * .7 + ux * z * .8); ctx.lineTo(cx0 - ux * z * .7 + uy * z * .8, cy0 - uy * z * .7 - ux * z * .8); ctx.closePath();
-      ctx.fillStyle = css(ep ? (ep.s === 'G' ? '--g' : ep.s === 'Y' ? '--y' : '--r') : '--none'); ctx.fill();
-      if (sel) { ctx.lineWidth = 1.5; ctx.strokeStyle = css('--accent'); ctx.stroke(); }
+    const x = sx(L.x), y = sy(L.y); if (x < -40 || y < -40 || x > W + 40 || y > H + 40) continue;
+    const r = (L.kind === 'X' ? 6.5 : 4.5) * Math.max(0.85, Math.min(1.7, k)), isSel = L.id === S.selected;
+    const ap = S.graph ? aprScreen(L, x, y, r) : [];
+    // у каждого подъезда свой сигнал: состояние берём только из его собственного готового замера
+    const st = ap.map(q => { const ep = effPhase(recFor(L, q.a.b, '', q.a.name), now); return ep ? ep : null; });
+    if (isSel) { ctx.beginPath(); ctx.arc(x, y, r + 6, 0, 7); ctx.fillStyle = css('--accent'); ctx.globalAlpha = .25; ctx.fill(); ctx.globalAlpha = 1; }
+    if (ap.length && s > 0.45) {
+      // крупно: у каждого въезда — светофорчик и стрелка направления
+      for (let i = 0; i < ap.length; i++) {
+        const q = ap[i], ph = st[i], sel = isSel && S.ek && S.ek.split('|')[1] === q.a.k;
+        drawArrowHead(q.ax, q.ay, q.ux, q.uy, q.z * 1.1, ph ? sigCol(ph.s) : css('--none'));
+        drawSignal(q.cx0, q.cy0, q.z, ph && ph.s, sel);
+        if (ph && s > 0.9) {
+          // секунды — с внешней стороны светофорчика (дальше от перекрёстка)
+          const ox = q.cx0 - x, oy = q.cy0 - y, ol = Math.hypot(ox, oy) || 1, txt = Math.ceil(ph.left) + '';
+          const tx = q.cx0 + ox / ol * q.z * 2.4, ty = q.cy0 + oy / ol * q.z * 2.4;
+          ctx.font = '600 10px system-ui,sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = css('--land'); ctx.strokeText(txt, tx, ty); ctx.fillStyle = sigCol(ph.s); ctx.fillText(txt, tx, ty); ctx.textAlign = 'left';
+        }
+      }
+      ctx.beginPath(); ctx.arc(x, y, r * 0.75, 0, 7); ctx.fillStyle = css('--panel'); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = css(L.mine ? '--accent' : '--none'); ctx.stroke();
+    } else if (ap.length) {
+      // мелко: кружок поделён на дольки — каждая со стороны своего въезда и своего цвета
+      const n = ap.length, ang = ap.map((q, i) => ({ i, t: (q.a.b + 180) % 360 })).sort((p, q) => p.t - q.t);
+      for (let j = 0; j < n; j++) {
+        const c = ang[j].t, pv = ang[(j + n - 1) % n].t, nx = ang[(j + 1) % n].t;
+        const a0 = n === 1 ? c - 180 : c - ((c - pv + 360) % 360 || 360) / 2, a1 = n === 1 ? c + 180 : c + ((nx - c + 360) % 360 || 360) / 2;
+        const toTh = d => d * Math.PI / 180 - Math.PI / 2, i = ang[j].i;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r, toTh(a0), toTh(a1)); ctx.closePath();
+        ctx.fillStyle = st[i] ? sigCol(st[i].s) : css('--panel'); ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.lineWidth = 1.5; ctx.strokeStyle = css(st.some(Boolean) ? '--panel' : L.mine ? '--accent' : '--none'); ctx.stroke();
+    } else {
+      const ph = phase(anyRec(L), now);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 7);
+      if (ph) { ctx.fillStyle = sigCol(ph.s); ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css('--panel'); ctx.stroke(); }
+      else { ctx.fillStyle = css('--panel'); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = css(L.mine ? '--accent' : '--none'); ctx.stroke(); }
     }
-    if (L.id === S.selected) { ctx.beginPath(); ctx.arc(x, y, r + 6, 0, 7); ctx.fillStyle = css('--accent'); ctx.globalAlpha = .25; ctx.fill(); ctx.globalAlpha = 1; }
-    ctx.beginPath(); ctx.arc(x, y, r, 0, 7);
-    if (ph) { ctx.fillStyle = css(ph.s === 'G' ? '--g' : ph.s === 'Y' ? '--y' : '--r'); ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css('--panel'); ctx.stroke(); }
-    else { ctx.fillStyle = css('--panel'); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = css(L.mine ? '--accent' : '--none'); ctx.stroke(); }
     if (showNum) {
+      const big = ap.length && s > 0.45, nx = big ? x - r - 4 - ctx.measureText(String(L.id + 1)).width * 1.1 : x + r + 4, ny = big ? y - r - 8 : y;
       ctx.font = '600 11px system-ui,sans-serif'; ctx.textBaseline = 'middle';
-      ctx.lineWidth = 3; ctx.strokeStyle = css('--land'); ctx.strokeText(String(L.id + 1), x + r + 4, y); ctx.fillStyle = css('--ink'); ctx.fillText(String(L.id + 1), x + r + 4, y);
-      if (ph && s > 0.4) { ctx.font = '11px system-ui,sans-serif'; ctx.strokeText(Math.ceil(ph.left) + ' с', x + r + 4, y + 13); ctx.fillStyle = css('--muted'); ctx.fillText(Math.ceil(ph.left) + ' с', x + r + 4, y + 13); }
+      ctx.lineWidth = 3; ctx.strokeStyle = css('--land'); ctx.strokeText(String(L.id + 1), nx, ny); ctx.fillStyle = css('--ink'); ctx.fillText(String(L.id + 1), nx, ny);
     }
   }
   if (S.addAt) { const x = sx(S.addAt[0]), y = sy(S.addAt[1]); ctx.beginPath(); ctx.arc(x, y, 9, 0, 7); ctx.setLineDash([4, 3]); ctx.lineWidth = 2.5; ctx.strokeStyle = css('--accent'); ctx.stroke(); ctx.setLineDash([]); }
@@ -541,7 +590,7 @@ function onTap(px, py) {
   if (S.view.s > 0.45 && S.graph) {   // нажали на треугольник-подъезд — сразу этот светофор и это направление
     const k = Math.max(0.85, Math.min(1.7, Math.max(0.35, Math.min(3, S.view.s / 0.12)))); let hit = null, hd = 13;
     for (const L of liveLights()) { const x = sx(L.x), y = sy(L.y); if (Math.abs(x - px) > 60 || Math.abs(y - py) > 60) continue;
-      for (const q of aprScreen(L, x, y, (L.kind === 'X' ? 6.5 : 4.5) * k)) { const d = Math.hypot(q.cx0 - px, q.cy0 - py); if (d < hd) { hd = d; hit = [L.id, `${L.id}|${q.a.k}`]; } } }
+      for (const q of aprScreen(L, x, y, (L.kind === 'X' ? 6.5 : 4.5) * k)) { const d = Math.min(Math.hypot(q.cx0 - px, q.cy0 - py), Math.hypot(q.ax - px, q.ay - py)); if (d < hd) { hd = d; hit = [L.id, `${L.id}|${q.a.k}`]; } } }
     if (hit) { selectLight(hit[0], false, hit[1]); showTab('lights'); return; }
   }
   let best = null, bd = 1e9;
